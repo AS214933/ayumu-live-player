@@ -1,5 +1,5 @@
 import Artplayer from "artplayer";
-import flvjs from "flv.js";
+import mpegts from "mpegts.js";
 import { playerConfig, type StreamQuality } from "./playerConfig";
 import "./style.css";
 
@@ -12,7 +12,7 @@ if (!app) {
 const defaultQuality = getDefaultQuality(playerConfig.qualities);
 let errorOverlay: HTMLDivElement | null = null;
 let pendingErrorMessage: string | null = null;
-let flvPlayer: flvjs.Player | null = null;
+let streamPlayer: mpegts.Player | null = null;
 
 const art = new Artplayer({
   container: app,
@@ -34,12 +34,11 @@ const art = new Artplayer({
   quality: playerConfig.qualities.map((quality) => ({
     html: quality.name,
     url: quality.url,
-    type: "flv",
     default: quality.url === defaultQuality.url,
   })),
   customType: {
     flv(video: HTMLVideoElement, url: string) {
-      loadFlvSource(video, url);
+      loadFlvSource(video, getQualityByUrl(url));
     },
   },
 } as Artplayer["option"]);
@@ -51,11 +50,11 @@ if (pendingErrorMessage) {
 }
 
 art.on("destroy", () => {
-  destroyFlvPlayer();
+  destroyStreamPlayer();
 });
 
 window.addEventListener("beforeunload", () => {
-  destroyFlvPlayer();
+  destroyStreamPlayer();
 });
 
 function getDefaultQuality(qualities: StreamQuality[]): StreamQuality {
@@ -66,50 +65,77 @@ function getDefaultQuality(qualities: StreamQuality[]): StreamQuality {
   return qualities.find((quality) => quality.default) ?? qualities[0];
 }
 
-function loadFlvSource(video: HTMLVideoElement, url: string) {
-  destroyFlvPlayer();
+function getQualityByUrl(url: string): StreamQuality {
+  return playerConfig.qualities.find((quality) => quality.url === url) ?? {
+    name: "自定义 FLV",
+    url,
+    codec: "avc",
+  };
+}
+
+function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
+  destroyStreamPlayer();
   hidePlayerError();
 
-  if (!flvjs.isSupported()) {
-    const message = "当前浏览器不支持 FLV/MSE 播放，请更换支持 Media Source Extensions 的浏览器。";
-    showPlayerError(message);
-    video.removeAttribute("src");
-    video.load();
+  const features = mpegts.getFeatureList();
+
+  if (!features.mseLivePlayback || !mpegts.isSupported()) {
+    showPlayerError("当前浏览器不支持 FLV/MSE 播放，请更换支持 Media Source Extensions 的浏览器。");
+    resetVideo(video);
     return;
   }
 
-  flvPlayer = flvjs.createPlayer(
+  if (quality.codec === "hevc" && !features.mseH265Playback) {
+    showPlayerError("当前浏览器不支持 HEVC/H.265 的 MSE 播放，请切换 AVC 清晰度或使用支持 HEVC 的浏览器。");
+    resetVideo(video);
+    return;
+  }
+
+  streamPlayer = mpegts.createPlayer(
     {
       type: "flv",
-      url,
+      url: quality.url,
       isLive: true,
     },
     {
       enableStashBuffer: false,
       stashInitialSize: 128,
       autoCleanupSourceBuffer: true,
+      liveBufferLatencyChasing: true,
+      liveBufferLatencyMaxLatency: 1.5,
+      liveBufferLatencyMinRemain: 0.5,
     },
   );
 
-  flvPlayer.attachMediaElement(video);
-  flvPlayer.load();
+  streamPlayer.attachMediaElement(video);
+  streamPlayer.load();
 
-  flvPlayer.on(flvjs.Events.ERROR, (errorType, errorDetail, errorInfo) => {
+  streamPlayer.on(mpegts.Events.ERROR, (errorType, errorDetail, errorInfo) => {
     console.error("FLV playback error:", errorType, errorDetail, errorInfo);
     showPlayerError(`FLV 加载失败：${String(errorDetail || errorType)}`);
   });
 }
 
-function destroyFlvPlayer() {
-  if (!flvPlayer) {
+function resetVideo(video: HTMLVideoElement) {
+  try {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+  } catch (error) {
+    console.error("Video reset failed:", error);
+  }
+}
+
+function destroyStreamPlayer() {
+  if (!streamPlayer) {
     return;
   }
 
-  flvPlayer.pause();
-  flvPlayer.unload();
-  flvPlayer.detachMediaElement();
-  flvPlayer.destroy();
-  flvPlayer = null;
+  streamPlayer.pause();
+  streamPlayer.unload();
+  streamPlayer.detachMediaElement();
+  streamPlayer.destroy();
+  streamPlayer = null;
 }
 
 function createErrorOverlay(container: HTMLElement): HTMLDivElement {
