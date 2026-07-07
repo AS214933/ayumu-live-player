@@ -2,12 +2,15 @@ export type StreamQuality = {
   name: string;
   url: string;
   default?: boolean;
+  codec?: "avc" | "hevc";
 };
 
 export type PlayerConfig = {
   title: string;
   theme: string;
   qualities: StreamQuality[];
+  autoplay: boolean;
+  screenshot: boolean;
 };
 
 export const playerConfig: PlayerConfig = {
@@ -28,4 +31,6 @@ export const playerConfig: PlayerConfig = {
       url: "https://example.com/live-480p.flv",
     },
   ],
+  autoplay: true,
+  screenshot: true,
 };
