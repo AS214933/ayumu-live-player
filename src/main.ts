@@ -42,6 +42,11 @@ const art = new Artplayer({
       loadFlvSource(video, getQualityByUrl(url));
     },
   },
+  icons: {
+    loading: '<img src="/assets/ploading.gif">',
+    state: '<img width="150" height="150" src="/assets/state.svg">',
+    indicator: '<img width="16" height="16" src="/assets/indicator.svg">',
+  },
 } as Artplayer["option"]);
 
 errorOverlay = createErrorOverlay(app);
