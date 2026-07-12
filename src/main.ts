@@ -21,6 +21,7 @@ const art = new Artplayer({
   title: playerConfig.title,
   theme: playerConfig.theme,
   autoplay: playerConfig.autoplay,
+  autoOrientation: playerConfig.autoorientation,
   muted: false,
   volume: 1,
   isLive: true,

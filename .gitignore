@@ -3,3 +3,4 @@ dist
 .vite
 *.local
 dev-server*.log
+public/assets/favicon.png

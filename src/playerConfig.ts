@@ -10,6 +10,7 @@ export type PlayerConfig = {
   theme: string;
   qualities: StreamQuality[];
   autoplay: boolean;
+  autoorientation: boolean;
   screenshot: boolean;
 };
 
@@ -32,5 +33,6 @@ export const playerConfig: PlayerConfig = {
     },
   ],
   autoplay: true,
+  autoorientation: true,
   screenshot: true,
 };
