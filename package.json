@@ -9,6 +9,7 @@
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
+    "@microsoft/clarity": "^1.0.2",
     "artplayer": "^5.2.5",
     "mpegts.js": "^1.8.0"
   },

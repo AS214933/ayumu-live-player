@@ -14,6 +14,10 @@ export type PlayerConfig = {
   screenshot: boolean;
 };
 
+export type AnalyticsConfig = {
+  clarityProjectId: string;
+}
+
 export const playerConfig: PlayerConfig = {
   title: "Ayumu Live",
   theme: "#00A3FF",
@@ -35,4 +39,8 @@ export const playerConfig: PlayerConfig = {
   autoplay: true,
   autoorientation: true,
   screenshot: true,
+};
+
+export const analyticsConfig: AnalyticsConfig = {
+  clarityProjectId: "1a2b3c4d5e",
 };
