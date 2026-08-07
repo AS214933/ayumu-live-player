@@ -16,6 +16,7 @@ const defaultQuality = getDefaultQuality(playerConfig.qualities);
 let errorOverlay: HTMLDivElement | null = null;
 let pendingErrorMessage: string | null = null;
 let streamPlayer: mpegts.Player | null = null;
+const publicAssetUrl = createPublicAssetUrlResolver(import.meta.env.BASE_URL);
 
 const art = new Artplayer({
   container: app,
@@ -47,9 +48,9 @@ const art = new Artplayer({
     },
   },
   icons: {
-    loading: '<img src="/assets/ploading.gif">',
-    state: '<img width="150" height="150" src="/assets/state.svg">',
-    indicator: '<img width="16" height="16" src="/assets/indicator.svg">',
+    loading: `<img src="${publicAssetUrl("assets/ploading.gif")}">`,
+    state: `<img width="150" height="150" src="${publicAssetUrl("assets/state.svg")}">`,
+    indicator: `<img width="16" height="16" src="${publicAssetUrl("assets/indicator.svg")}">`,
   },
 } as Artplayer["option"]);
 
@@ -75,6 +76,14 @@ function getDefaultQuality(qualities: StreamQuality[]): StreamQuality {
   }
 
   return qualities.find((quality) => quality.default) ?? qualities[0];
+}
+
+function createPublicAssetUrlResolver(baseUrl: string) {
+  return (path: string) => {
+    const cleanBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+    const cleanPath = path.replace(/^\/+/, "");
+    return `${cleanBase}${cleanPath}`;
+  };
 }
 
 function getQualityByUrl(url: string): StreamQuality {
