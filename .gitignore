@@ -4,3 +4,4 @@ dist
 *.local
 dev-server*.log
 public/assets/favicon.png
+src/playerConfig.ts
