@@ -1,7 +1,7 @@
 import Artplayer from "artplayer";
 import mpegts from "mpegts.js";
-import Clarity from "@microsoft/clarity";
-import { analyticsConfig, playerConfig, type StreamQuality } from "./playerConfig";
+import { initAnalytics, trackClarityEvent } from "./analytics";
+import { playerConfig, type StreamQuality } from "./playerConfig";
 import "./style.css";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -10,7 +10,7 @@ if (!app) {
   throw new Error("Player container #app was not found.");
 }
 
-Clarity.init(analyticsConfig.clarityProjectId)
+initAnalytics();
 
 const defaultQuality = getDefaultQuality(playerConfig.qualities);
 let errorOverlay: HTMLDivElement | null = null;
@@ -61,12 +61,12 @@ if (pendingErrorMessage) {
 }
 
 art.on("destroy", () => {
-  Clarity.event("player_destroyed");
+  trackClarityEvent("player_destroyed");
   destroyStreamPlayer();
 });
 
 window.addEventListener("beforeunload", () => {
-  Clarity.event("player_destroyed");
+  trackClarityEvent("player_destroyed");
   destroyStreamPlayer();
 });
 
@@ -99,17 +99,17 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
   hidePlayerError();
 
   const features = mpegts.getFeatureList();
-  Clarity.event("flv_source_loaded");
+  trackClarityEvent("flv_source_loaded");
 
   if (!features.mseLivePlayback || !mpegts.isSupported()) {
-    Clarity.event("flv_source_load_failed");
+    trackClarityEvent("flv_source_load_failed");
     showPlayerError("当前浏览器不支持 FLV/MSE 播放，请更换支持 Media Source Extensions 的浏览器。");
     resetVideo(video);
     return;
   }
 
   if (quality.codec === "hevc" && !features.mseH265Playback) {
-    Clarity.event("flv_source_load_failed");
+    trackClarityEvent("flv_source_load_failed");
     showPlayerError("当前浏览器不支持 HEVC/H.265 的 MSE 播放，请切换 AVC 清晰度或使用支持 HEVC 的浏览器。");
     resetVideo(video);
     return;
