@@ -54,6 +54,8 @@ const art = new Artplayer({
   },
 } as Artplayer["option"]);
 
+installControlsAutoHide(art);
+
 errorOverlay = createErrorOverlay(app);
 
 if (pendingErrorMessage) {
@@ -84,6 +86,32 @@ function createPublicAssetUrlResolver(baseUrl: string) {
     const cleanPath = path.replace(/^\/+/, "");
     return `${cleanBase}${cleanPath}`;
   };
+}
+
+function installControlsAutoHide(player: Artplayer) {
+  const hideControls = () => {
+    player.controls.show = false;
+  };
+
+  const handleDocumentMouseOut = (event: MouseEvent) => {
+    if (!event.relatedTarget) {
+      hideControls();
+    }
+  };
+
+  player.template.$player.addEventListener("pointerleave", hideControls);
+  player.template.$player.addEventListener("mouseleave", hideControls);
+  document.addEventListener("mouseout", handleDocumentMouseOut);
+  window.addEventListener("blur", hideControls);
+  document.addEventListener("visibilitychange", hideControls);
+
+  player.on("destroy", () => {
+    player.template.$player.removeEventListener("pointerleave", hideControls);
+    player.template.$player.removeEventListener("mouseleave", hideControls);
+    document.removeEventListener("mouseout", handleDocumentMouseOut);
+    window.removeEventListener("blur", hideControls);
+    document.removeEventListener("visibilitychange", hideControls);
+  });
 }
 
 function getQualityByUrl(url: string): StreamQuality {
