@@ -36,22 +36,6 @@ body {
   height: 100%;
 }
 
-.player-preview-canvas {
-  position: absolute;
-  inset: 0;
-  z-index: 12;
-  width: 100%;
-  height: 100%;
-  background: #000;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease;
-}
-
-.player-preview-canvas.is-active {
-  opacity: 1;
-}
-
 .player-error {
   position: absolute;
   left: 50%;

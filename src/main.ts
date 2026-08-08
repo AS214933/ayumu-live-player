@@ -116,19 +116,10 @@ function installControlsAutoHide(player: Artplayer) {
 }
 
 function installBackgroundPlaybackGuard(player: Artplayer) {
-  const { $player, $video } = player.template;
-  const previewCanvas = document.createElement("canvas");
-  const previewContext = previewCanvas.getContext("2d", { alpha: false });
+  const { $video } = player.template;
   let shouldKeepPlaying = false;
-  let frameTimer: number | null = null;
-  let snapshotTimer: number | null = null;
-
-  previewCanvas.className = "player-preview-canvas";
-  previewCanvas.setAttribute("aria-hidden", "true");
-  $player.appendChild(previewCanvas);
 
   const shouldRecoverPlayback = () => document.visibilityState !== "visible" || !document.hasFocus();
-  const shouldMirrorPreview = () => document.visibilityState !== "visible";
 
   const resumeIfNeeded = () => {
     if (!shouldKeepPlaying || !$video.paused || $video.ended) {
@@ -140,99 +131,8 @@ function installBackgroundPlaybackGuard(player: Artplayer) {
     });
   };
 
-  const syncPreviewFrame = () => {
-    if (!previewContext || $video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-      return;
-    }
-
-    if (!$video.videoWidth || !$video.videoHeight) {
-      return;
-    }
-
-    const { width, height } = $player.getBoundingClientRect();
-    const scale = Math.min(1, 1280 / Math.max(width, 1));
-    const canvasWidth = Math.max(1, Math.round(width * scale));
-    const canvasHeight = Math.max(1, Math.round(height * scale));
-
-    if (previewCanvas.width !== canvasWidth || previewCanvas.height !== canvasHeight) {
-      previewCanvas.width = canvasWidth;
-      previewCanvas.height = canvasHeight;
-    }
-
-    const videoRatio = $video.videoWidth / Math.max($video.videoHeight, 1);
-    const canvasRatio = canvasWidth / canvasHeight;
-    const drawWidth = canvasRatio > videoRatio ? canvasHeight * videoRatio : canvasWidth;
-    const drawHeight = canvasRatio > videoRatio ? canvasHeight : canvasWidth / videoRatio;
-    const drawLeft = (canvasWidth - drawWidth) / 2;
-    const drawTop = (canvasHeight - drawHeight) / 2;
-
-    try {
-      previewContext.fillStyle = "#000";
-      previewContext.fillRect(0, 0, canvasWidth, canvasHeight);
-      previewContext.drawImage($video, drawLeft, drawTop, drawWidth, drawHeight);
-    } catch (error) {
-      console.warn("Failed to draw player preview frame:", error);
-      stopPreviewMirror();
-    }
-  };
-
-  const startPreviewMirror = () => {
-    if (!shouldKeepPlaying) {
-      return;
-    }
-
-    clearPreviewSnapshotTimer();
-    syncPreviewFrame();
-    previewCanvas.classList.add("is-active");
-
-    if (frameTimer === null) {
-      frameTimer = window.setInterval(syncPreviewFrame, 250);
-    }
-  };
-
-  const stopPreviewMirror = () => {
-    clearPreviewSnapshotTimer();
-    previewCanvas.classList.remove("is-active");
-
-    if (frameTimer !== null) {
-      window.clearInterval(frameTimer);
-      frameTimer = null;
-    }
-  };
-
-  const showPreviewSnapshot = () => {
-    if (!shouldKeepPlaying || shouldMirrorPreview()) {
-      return;
-    }
-
-    clearPreviewSnapshotTimer();
-    syncPreviewFrame();
-    previewCanvas.classList.add("is-active");
-    snapshotTimer = window.setTimeout(() => {
-      previewCanvas.classList.remove("is-active");
-      snapshotTimer = null;
-    }, 160);
-  };
-
-  const clearPreviewSnapshotTimer = () => {
-    if (snapshotTimer !== null) {
-      window.clearTimeout(snapshotTimer);
-      snapshotTimer = null;
-    }
-  };
-
   const handleBackgroundStateChange = () => {
-    if (shouldMirrorPreview()) {
-      startPreviewMirror();
-      window.setTimeout(resumeIfNeeded, 0);
-      window.setTimeout(resumeIfNeeded, 300);
-      return;
-    }
-
-    stopPreviewMirror();
-
-    if (!document.hasFocus()) {
-      showPreviewSnapshot();
+    if (shouldRecoverPlayback()) {
       window.setTimeout(resumeIfNeeded, 0);
       window.setTimeout(resumeIfNeeded, 300);
     }
@@ -243,7 +143,6 @@ function installBackgroundPlaybackGuard(player: Artplayer) {
   });
   player.on("video:playing", () => {
     shouldKeepPlaying = true;
-    syncPreviewFrame();
   });
   player.on("video:pause", () => {
     if (shouldRecoverPlayback() && shouldKeepPlaying && !$video.ended) {
@@ -252,16 +151,9 @@ function installBackgroundPlaybackGuard(player: Artplayer) {
     }
 
     shouldKeepPlaying = false;
-    stopPreviewMirror();
   });
   player.on("video:ended", () => {
     shouldKeepPlaying = false;
-    stopPreviewMirror();
-  });
-  player.on("video:timeupdate", () => {
-    if (previewCanvas.classList.contains("is-active")) {
-      syncPreviewFrame();
-    }
   });
 
   window.addEventListener("blur", handleBackgroundStateChange);
@@ -270,8 +162,6 @@ function installBackgroundPlaybackGuard(player: Artplayer) {
   document.addEventListener("visibilitychange", handleBackgroundStateChange);
 
   player.on("destroy", () => {
-    stopPreviewMirror();
-    previewCanvas.remove();
     window.removeEventListener("blur", handleBackgroundStateChange);
     window.removeEventListener("focus", handleBackgroundStateChange);
     window.removeEventListener("pageshow", handleBackgroundStateChange);
