@@ -121,12 +121,14 @@ function installBackgroundPlaybackGuard(player: Artplayer) {
   const previewContext = previewCanvas.getContext("2d", { alpha: false });
   let shouldKeepPlaying = false;
   let frameTimer: number | null = null;
+  let snapshotTimer: number | null = null;
 
   previewCanvas.className = "player-preview-canvas";
   previewCanvas.setAttribute("aria-hidden", "true");
   $player.appendChild(previewCanvas);
 
-  const isBackgrounded = () => document.visibilityState !== "visible" || !document.hasFocus();
+  const shouldRecoverPlayback = () => document.visibilityState !== "visible" || !document.hasFocus();
+  const shouldMirrorPreview = () => document.visibilityState !== "visible";
 
   const resumeIfNeeded = () => {
     if (!shouldKeepPlaying || !$video.paused || $video.ended) {
@@ -179,6 +181,7 @@ function installBackgroundPlaybackGuard(player: Artplayer) {
       return;
     }
 
+    clearPreviewSnapshotTimer();
     syncPreviewFrame();
     previewCanvas.classList.add("is-active");
 
@@ -188,6 +191,7 @@ function installBackgroundPlaybackGuard(player: Artplayer) {
   };
 
   const stopPreviewMirror = () => {
+    clearPreviewSnapshotTimer();
     previewCanvas.classList.remove("is-active");
 
     if (frameTimer !== null) {
@@ -196,8 +200,29 @@ function installBackgroundPlaybackGuard(player: Artplayer) {
     }
   };
 
+  const showPreviewSnapshot = () => {
+    if (!shouldKeepPlaying || shouldMirrorPreview()) {
+      return;
+    }
+
+    clearPreviewSnapshotTimer();
+    syncPreviewFrame();
+    previewCanvas.classList.add("is-active");
+    snapshotTimer = window.setTimeout(() => {
+      previewCanvas.classList.remove("is-active");
+      snapshotTimer = null;
+    }, 160);
+  };
+
+  const clearPreviewSnapshotTimer = () => {
+    if (snapshotTimer !== null) {
+      window.clearTimeout(snapshotTimer);
+      snapshotTimer = null;
+    }
+  };
+
   const handleBackgroundStateChange = () => {
-    if (isBackgrounded()) {
+    if (shouldMirrorPreview()) {
       startPreviewMirror();
       window.setTimeout(resumeIfNeeded, 0);
       window.setTimeout(resumeIfNeeded, 300);
@@ -205,6 +230,12 @@ function installBackgroundPlaybackGuard(player: Artplayer) {
     }
 
     stopPreviewMirror();
+
+    if (!document.hasFocus()) {
+      showPreviewSnapshot();
+      window.setTimeout(resumeIfNeeded, 0);
+      window.setTimeout(resumeIfNeeded, 300);
+    }
   };
 
   player.on("video:play", () => {
@@ -215,7 +246,7 @@ function installBackgroundPlaybackGuard(player: Artplayer) {
     syncPreviewFrame();
   });
   player.on("video:pause", () => {
-    if (isBackgrounded() && shouldKeepPlaying && !$video.ended) {
+    if (shouldRecoverPlayback() && shouldKeepPlaying && !$video.ended) {
       window.setTimeout(resumeIfNeeded, 0);
       return;
     }
