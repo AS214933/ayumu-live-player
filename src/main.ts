@@ -55,7 +55,6 @@ const art = new Artplayer({
 } as Artplayer["option"]);
 
 installControlsAutoHide(art);
-installBackgroundPlaybackGuard(art);
 
 errorOverlay = createErrorOverlay(app);
 
@@ -115,60 +114,6 @@ function installControlsAutoHide(player: Artplayer) {
   });
 }
 
-function installBackgroundPlaybackGuard(player: Artplayer) {
-  const { $video } = player.template;
-  let shouldKeepPlaying = false;
-
-  const shouldRecoverPlayback = () => document.visibilityState !== "visible" || !document.hasFocus();
-
-  const resumeIfNeeded = () => {
-    if (!shouldKeepPlaying || !$video.paused || $video.ended) {
-      return;
-    }
-
-    $video.play().catch((error) => {
-      console.warn("Failed to resume background playback:", error);
-    });
-  };
-
-  const handleBackgroundStateChange = () => {
-    if (shouldRecoverPlayback()) {
-      window.setTimeout(resumeIfNeeded, 0);
-      window.setTimeout(resumeIfNeeded, 300);
-    }
-  };
-
-  player.on("video:play", () => {
-    shouldKeepPlaying = true;
-  });
-  player.on("video:playing", () => {
-    shouldKeepPlaying = true;
-  });
-  player.on("video:pause", () => {
-    if (shouldRecoverPlayback() && shouldKeepPlaying && !$video.ended) {
-      window.setTimeout(resumeIfNeeded, 0);
-      return;
-    }
-
-    shouldKeepPlaying = false;
-  });
-  player.on("video:ended", () => {
-    shouldKeepPlaying = false;
-  });
-
-  window.addEventListener("blur", handleBackgroundStateChange);
-  window.addEventListener("focus", handleBackgroundStateChange);
-  window.addEventListener("pageshow", handleBackgroundStateChange);
-  document.addEventListener("visibilitychange", handleBackgroundStateChange);
-
-  player.on("destroy", () => {
-    window.removeEventListener("blur", handleBackgroundStateChange);
-    window.removeEventListener("focus", handleBackgroundStateChange);
-    window.removeEventListener("pageshow", handleBackgroundStateChange);
-    document.removeEventListener("visibilitychange", handleBackgroundStateChange);
-  });
-}
-
 function getQualityByUrl(url: string): StreamQuality {
   return playerConfig.qualities.find((quality) => quality.url === url) ?? {
     name: "自定义 FLV",
@@ -208,9 +153,7 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
       enableStashBuffer: false,
       stashInitialSize: 128,
       autoCleanupSourceBuffer: true,
-      lazyLoad: false,
       liveBufferLatencyChasing: true,
-      liveBufferLatencyChasingOnPaused: true,
       liveBufferLatencyMaxLatency: 1.5,
       liveBufferLatencyMinRemain: 0.5,
     },
