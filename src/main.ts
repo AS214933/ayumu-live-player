@@ -1,7 +1,8 @@
 import Artplayer from "artplayer";
+import Hls from "hls.js";
 import mpegts from "mpegts.js";
 import { initAnalytics, trackClarityEvent } from "./analytics";
-import { playerConfig, type StreamQuality } from "./playerConfig";
+import { playerConfig, type StreamFormat, type StreamQuality } from "./playerConfig";
 import "./style.css";
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -16,16 +17,18 @@ const defaultQuality = getDefaultQuality(playerConfig.qualities);
 let errorOverlay: HTMLDivElement | null = null;
 let pauseFrameOverlay: HTMLDivElement | null = null;
 let pendingErrorMessage: string | null = null;
-let streamPlayer: mpegts.Player | null = null;
+let flvPlayer: mpegts.Player | null = null;
+let hlsPlayer: Hls | null = null;
+let nativeHlsVideo: HTMLVideoElement | null = null;
 let currentQuality: StreamQuality = defaultQuality;
 let streamStoppedByPause = false;
 let resumeAfterReload = false;
+let isDestroyingStream = false;
 const publicAssetUrl = createPublicAssetUrlResolver(import.meta.env.BASE_URL);
 
 const art = new Artplayer({
   container: app,
   url: defaultQuality.url,
-  type: "flv",
   title: playerConfig.title,
   theme: playerConfig.theme,
   autoplay: playerConfig.autoplay,
@@ -50,7 +53,10 @@ const art = new Artplayer({
   })),
   customType: {
     flv(video: HTMLVideoElement, url: string) {
-      loadFlvSource(video, getQualityByUrl(url));
+      loadStreamSource(video, getQualityByUrl(url));
+    },
+    m3u8(video: HTMLVideoElement, url: string) {
+      loadStreamSource(video, getQualityByUrl(url));
     },
   },
   icons: {
@@ -73,17 +79,17 @@ if (pendingErrorMessage) {
 
 art.on("destroy", () => {
   trackClarityEvent("player_destroyed");
-  destroyStreamPlayer();
+  destroyStreamPlayer(art.video);
 });
 
 window.addEventListener("beforeunload", () => {
   trackClarityEvent("player_destroyed");
-  destroyStreamPlayer();
+  destroyStreamPlayer(art.video);
 });
 
 function getDefaultQuality(qualities: StreamQuality[]): StreamQuality {
   if (qualities.length === 0) {
-    throw new Error("At least one FLV quality must be configured.");
+    throw new Error("至少要配置一个清晰度源。");
   }
 
   return qualities.find((quality) => quality.default) ?? qualities[0];
@@ -129,17 +135,13 @@ function installPauseFetchControl(player: Artplayer) {
   };
 
   const stopFetchingOnPause = () => {
-    if (!streamPlayer || player.video.ended) {
+    if (!hasActiveStreamSource() || isDestroyingStream || player.video.ended) {
       return;
     }
 
-    const hasPauseFrame = showPauseFrame(player.video);
+    showPauseFrame(player.video);
     streamStoppedByPause = true;
-    destroyStreamPlayer();
-
-    if (hasPauseFrame) {
-      resetVideo(player.video);
-    }
+    destroyStreamPlayer(player.video);
   };
 
   const restartFetchingOnPlay = () => {
@@ -148,14 +150,13 @@ function installPauseFetchControl(player: Artplayer) {
     }
 
     resumeAfterReload = true;
-    loadFlvSource(player.video, currentQuality);
+    loadStreamSource(player.video, currentQuality);
     player.video
       .play()
       .catch((error) => {
         streamStoppedByPause = true;
-        destroyStreamPlayer();
-        resetVideo(player.video);
-        console.warn("Failed to restart FLV playback:", error);
+        destroyStreamPlayer(player.video);
+        console.warn("Failed to restart stream playback:", error);
       })
       .finally(() => {
         resumeAfterReload = false;
@@ -186,25 +187,74 @@ function removeLiveProgressContainer(player: Artplayer) {
 }
 
 function getQualityByUrl(url: string): StreamQuality {
-  return playerConfig.qualities.find((quality) => quality.url === url) ?? {
-    name: "自定义 FLV",
-    url,
-    codec: "avc",
-  };
+  const format = inferStreamFormat(url);
+
+  return (
+    playerConfig.qualities.find((quality) => quality.url === url) ?? {
+      name:
+        format === "m3u8"
+          ? "自定义 M3U8"
+          : format === "flv"
+            ? "自定义 FLV"
+            : "自定义源",
+      url,
+      format: format ?? "flv",
+      codec: "avc",
+    }
+  );
+}
+
+function getStreamFormat(quality: StreamQuality): StreamFormat | null {
+  return quality.format ?? inferStreamFormat(quality.url);
+}
+
+function inferStreamFormat(url: string): StreamFormat | null {
+  const normalizedUrl = url.split("?")[0].split("#")[0].toLowerCase();
+
+  if (normalizedUrl.endsWith(".m3u8")) {
+    return "m3u8";
+  }
+
+  if (normalizedUrl.endsWith(".flv")) {
+    return "flv";
+  }
+
+  return null;
+}
+
+function hasActiveStreamSource() {
+  return Boolean(flvPlayer || hlsPlayer || nativeHlsVideo);
+}
+
+function loadStreamSource(video: HTMLVideoElement, quality: StreamQuality) {
+  const format = getStreamFormat(quality);
+
+  if (!format) {
+    trackClarityEvent("stream_source_load_failed");
+    showPlayerError('无法识别播放源格式，请在配置里把 format 设成 "flv" 或 "m3u8"。');
+    resumeAfterReload = false;
+    return;
+  }
+
+  currentQuality = quality;
+  destroyStreamPlayer(video);
+  hidePlayerError();
+
+  if (format === "flv") {
+    loadFlvSource(video, quality);
+    return;
+  }
+
+  loadHlsSource(video, quality);
 }
 
 function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
-  currentQuality = quality;
-  destroyStreamPlayer();
-  hidePlayerError();
-
   const features = mpegts.getFeatureList();
   trackClarityEvent("flv_source_loaded");
 
   if (!features.mseLivePlayback || !mpegts.isSupported()) {
     trackClarityEvent("flv_source_load_failed");
     showPlayerError("当前浏览器不支持 FLV/MSE 播放，请更换支持 Media Source Extensions 的浏览器。");
-    resetVideo(video);
     resumeAfterReload = false;
     return;
   }
@@ -212,35 +262,89 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
   if (quality.codec === "hevc" && !features.mseH265Playback) {
     trackClarityEvent("flv_source_load_failed");
     showPlayerError("当前浏览器不支持 HEVC/H.265 的 MSE 播放，请切换 AVC 清晰度或使用支持 HEVC 的浏览器。");
-    resetVideo(video);
     resumeAfterReload = false;
     return;
   }
 
-  streamPlayer = mpegts.createPlayer(
-    {
-      type: "flv",
-      url: quality.url,
-      isLive: true,
-    },
-    {
-      enableStashBuffer: false,
-      stashInitialSize: 128,
-      autoCleanupSourceBuffer: true,
-      liveBufferLatencyChasing: true,
-      liveBufferLatencyMaxLatency: 1.5,
-      liveBufferLatencyMinRemain: 0.5,
-    },
-  );
+  try {
+    flvPlayer = mpegts.createPlayer(
+      {
+        type: "flv",
+        url: quality.url,
+        isLive: true,
+      },
+      {
+        enableStashBuffer: false,
+        stashInitialSize: 128,
+        autoCleanupSourceBuffer: true,
+        liveBufferLatencyChasing: true,
+        liveBufferLatencyMaxLatency: 1.5,
+        liveBufferLatencyMinRemain: 0.5,
+      },
+    );
 
-  streamPlayer.attachMediaElement(video);
-  streamPlayer.load();
-  streamStoppedByPause = false;
+    flvPlayer.on(mpegts.Events.ERROR, (errorType, errorDetail, errorInfo) => {
+      console.error("FLV playback error:", errorType, errorDetail, errorInfo);
+      showPlayerError(`FLV 加载失败：${String(errorDetail || errorType)}`);
+    });
 
-  streamPlayer.on(mpegts.Events.ERROR, (errorType, errorDetail, errorInfo) => {
-    console.error("FLV playback error:", errorType, errorDetail, errorInfo);
-    showPlayerError(`FLV 加载失败：${String(errorDetail || errorType)}`);
-  });
+    flvPlayer.attachMediaElement(video);
+    flvPlayer.load();
+    streamStoppedByPause = false;
+  } catch (error) {
+    trackClarityEvent("flv_source_load_failed");
+    showPlayerError(`FLV 加载失败：${error instanceof Error ? error.message : String(error)}`);
+    resumeAfterReload = false;
+    destroyStreamPlayer(video);
+  }
+}
+
+function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
+  trackClarityEvent("m3u8_source_loaded");
+
+  if (video.canPlayType("application/vnd.apple.mpegurl")) {
+    nativeHlsVideo = video;
+    video.src = quality.url;
+    video.load();
+    streamStoppedByPause = false;
+    return;
+  }
+
+  if (!Hls.isSupported()) {
+    trackClarityEvent("m3u8_source_load_failed");
+    showPlayerError("当前浏览器不支持 HLS/M3U8 播放，请更换支持 Media Source Extensions 或原生 HLS 的浏览器。");
+    resumeAfterReload = false;
+    return;
+  }
+
+  try {
+    hlsPlayer = new Hls({
+      lowLatencyMode: true,
+      backBufferLength: 30,
+      liveSyncDurationCount: 3,
+      liveMaxLatencyDurationCount: 10,
+    });
+
+    hlsPlayer.on(Hls.Events.ERROR, (_event, data) => {
+      console.error("HLS playback error:", data);
+
+      if (data.fatal) {
+        trackClarityEvent("m3u8_source_load_failed");
+        showPlayerError(`M3U8 加载失败：${String(data.details || data.type)}`);
+        resumeAfterReload = false;
+        destroyStreamPlayer(video);
+      }
+    });
+
+    hlsPlayer.loadSource(quality.url);
+    hlsPlayer.attachMedia(video);
+    streamStoppedByPause = false;
+  } catch (error) {
+    trackClarityEvent("m3u8_source_load_failed");
+    showPlayerError(`M3U8 加载失败：${error instanceof Error ? error.message : String(error)}`);
+    resumeAfterReload = false;
+    destroyStreamPlayer(video);
+  }
 }
 
 function resetVideo(video: HTMLVideoElement) {
@@ -328,18 +432,44 @@ function captureVideoFrame(video: HTMLVideoElement): string | null {
   }
 }
 
-function destroyStreamPlayer() {
-  if (!streamPlayer) {
+function destroyStreamPlayer(video?: HTMLVideoElement) {
+  if (isDestroyingStream) {
     return;
   }
 
+  isDestroyingStream = true;
+
   try {
-    streamPlayer.pause();
-    streamPlayer.unload();
-    streamPlayer.detachMediaElement();
-    streamPlayer.destroy();
+    const shouldResetVideo = hasActiveStreamSource();
+    const resetTarget = video ?? nativeHlsVideo ?? undefined;
+
+    if (flvPlayer) {
+      try {
+        flvPlayer.pause();
+        flvPlayer.unload();
+        flvPlayer.detachMediaElement();
+        flvPlayer.destroy();
+      } finally {
+        flvPlayer = null;
+      }
+    }
+
+    if (hlsPlayer) {
+      try {
+        hlsPlayer.stopLoad();
+        hlsPlayer.destroy();
+      } finally {
+        hlsPlayer = null;
+      }
+    }
+
+    nativeHlsVideo = null;
+
+    if (shouldResetVideo && resetTarget) {
+      resetVideo(resetTarget);
+    }
   } finally {
-    streamPlayer = null;
+    isDestroyingStream = false;
   }
 }
 

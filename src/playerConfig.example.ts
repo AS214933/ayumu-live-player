@@ -1,7 +1,10 @@
+export type StreamFormat = "flv" | "m3u8";
+
 export type StreamQuality = {
   name: string;
   url: string;
   default?: boolean;
+  format?: StreamFormat;
   codec?: "avc" | "hevc";
 };
 
@@ -23,17 +26,23 @@ export const playerConfig: PlayerConfig = {
   theme: "#00A3FF",
   qualities: [
     {
-      name: "原画",
-      url: "https://example.com/live-1080p.flv",
+      name: "原画 (M3U8)",
+      url: "https://example.com/live-1080p.m3u8",
+      format: "m3u8",
+      codec: "avc",
       default: true,
     },
     {
-      name: "高清",
+      name: "高清 (FLV)",
       url: "https://example.com/live-720p.flv",
+      format: "flv",
+      codec: "avc",
     },
     {
-      name: "流畅",
+      name: "流畅 (FLV)",
       url: "https://example.com/live-480p.flv",
+      format: "flv",
+      codec: "avc",
     },
   ],
   autoplay: true,
