@@ -20,10 +20,12 @@ let pendingErrorMessage: string | null = null;
 let flvPlayer: mpegts.Player | null = null;
 let hlsPlayer: Hls | null = null;
 let nativeHlsVideo: HTMLVideoElement | null = null;
+let activeStreamKind: "flv" | "m3u8" | "native-hls" | null = null;
 let currentQuality: StreamQuality = defaultQuality;
 let streamStoppedByPause = false;
 let resumeAfterReload = false;
 let isDestroyingStream = false;
+let isTransitioningStream = false;
 const publicAssetUrl = createPublicAssetUrlResolver(import.meta.env.BASE_URL);
 
 const art = new Artplayer({
@@ -135,13 +137,17 @@ function installPauseFetchControl(player: Artplayer) {
   };
 
   const stopFetchingOnPause = () => {
-    if (!hasActiveStreamSource() || isDestroyingStream || player.video.ended) {
+    if (
+      !hasActiveStreamSource() ||
+      isDestroyingStream ||
+      isTransitioningStream ||
+      player.video.ended
+    ) {
       return;
     }
 
     showPauseFrame(player.video);
-    streamStoppedByPause = true;
-    destroyStreamPlayer(player.video);
+    stopStreamFetching();
   };
 
   const restartFetchingOnPlay = () => {
@@ -150,17 +156,15 @@ function installPauseFetchControl(player: Artplayer) {
     }
 
     resumeAfterReload = true;
-    loadStreamSource(player.video, currentQuality);
-    player.video
-      .play()
-      .catch((error) => {
-        streamStoppedByPause = true;
-        destroyStreamPlayer(player.video);
-        console.warn("Failed to restart stream playback:", error);
-      })
-      .finally(() => {
-        resumeAfterReload = false;
-      });
+
+    try {
+      restartStreamFetching(player.video);
+    } catch (error) {
+      streamStoppedByPause = true;
+      console.warn("Failed to restart stream fetching:", error);
+    } finally {
+      resumeAfterReload = false;
+    }
   };
 
   player.on("video:pause", stopFetchingOnPause);
@@ -226,6 +230,53 @@ function hasActiveStreamSource() {
   return Boolean(flvPlayer || hlsPlayer || nativeHlsVideo);
 }
 
+function stopStreamFetching() {
+  streamStoppedByPause = true;
+  isTransitioningStream = true;
+
+  try {
+    if (activeStreamKind === "flv" && flvPlayer) {
+      flvPlayer.unload();
+      return;
+    }
+
+    if (activeStreamKind === "m3u8" && hlsPlayer) {
+      hlsPlayer.stopLoad();
+      return;
+    }
+  } finally {
+    isTransitioningStream = false;
+  }
+}
+
+function restartStreamFetching(video: HTMLVideoElement) {
+  isTransitioningStream = true;
+
+  try {
+    if (activeStreamKind === "flv" && flvPlayer) {
+      flvPlayer.load();
+      streamStoppedByPause = false;
+      return;
+    }
+
+    if (activeStreamKind === "m3u8" && hlsPlayer) {
+      hlsPlayer.startLoad();
+      streamStoppedByPause = false;
+      return;
+    }
+
+    if (activeStreamKind === "native-hls" && nativeHlsVideo === video) {
+      streamStoppedByPause = false;
+      return;
+    }
+
+    loadStreamSource(video, currentQuality);
+    streamStoppedByPause = false;
+  } finally {
+    isTransitioningStream = false;
+  }
+}
+
 function loadStreamSource(video: HTMLVideoElement, quality: StreamQuality) {
   const format = getStreamFormat(quality);
 
@@ -237,15 +288,20 @@ function loadStreamSource(video: HTMLVideoElement, quality: StreamQuality) {
   }
 
   currentQuality = quality;
+  isTransitioningStream = true;
   destroyStreamPlayer(video);
   hidePlayerError();
 
-  if (format === "flv") {
-    loadFlvSource(video, quality);
-    return;
-  }
+  try {
+    if (format === "flv") {
+      loadFlvSource(video, quality);
+      return;
+    }
 
-  loadHlsSource(video, quality);
+    loadHlsSource(video, quality);
+  } finally {
+    isTransitioningStream = false;
+  }
 }
 
 function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
@@ -255,6 +311,7 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
   if (!features.mseLivePlayback || !mpegts.isSupported()) {
     trackClarityEvent("flv_source_load_failed");
     showPlayerError("当前浏览器不支持 FLV/MSE 播放，请更换支持 Media Source Extensions 的浏览器。");
+    activeStreamKind = null;
     resumeAfterReload = false;
     return;
   }
@@ -262,6 +319,7 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
   if (quality.codec === "hevc" && !features.mseH265Playback) {
     trackClarityEvent("flv_source_load_failed");
     showPlayerError("当前浏览器不支持 HEVC/H.265 的 MSE 播放，请切换 AVC 清晰度或使用支持 HEVC 的浏览器。");
+    activeStreamKind = null;
     resumeAfterReload = false;
     return;
   }
@@ -290,10 +348,12 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
 
     flvPlayer.attachMediaElement(video);
     flvPlayer.load();
+    activeStreamKind = "flv";
     streamStoppedByPause = false;
   } catch (error) {
     trackClarityEvent("flv_source_load_failed");
     showPlayerError(`FLV 加载失败：${error instanceof Error ? error.message : String(error)}`);
+    activeStreamKind = null;
     resumeAfterReload = false;
     destroyStreamPlayer(video);
   }
@@ -306,6 +366,7 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
     nativeHlsVideo = video;
     video.src = quality.url;
     video.load();
+    activeStreamKind = "native-hls";
     streamStoppedByPause = false;
     return;
   }
@@ -313,6 +374,7 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
   if (!Hls.isSupported()) {
     trackClarityEvent("m3u8_source_load_failed");
     showPlayerError("当前浏览器不支持 HLS/M3U8 播放，请更换支持 Media Source Extensions 或原生 HLS 的浏览器。");
+    activeStreamKind = null;
     resumeAfterReload = false;
     return;
   }
@@ -331,6 +393,7 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
       if (data.fatal) {
         trackClarityEvent("m3u8_source_load_failed");
         showPlayerError(`M3U8 加载失败：${String(data.details || data.type)}`);
+        activeStreamKind = null;
         resumeAfterReload = false;
         destroyStreamPlayer(video);
       }
@@ -338,10 +401,12 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
 
     hlsPlayer.loadSource(quality.url);
     hlsPlayer.attachMedia(video);
+    activeStreamKind = "m3u8";
     streamStoppedByPause = false;
   } catch (error) {
     trackClarityEvent("m3u8_source_load_failed");
     showPlayerError(`M3U8 加载失败：${error instanceof Error ? error.message : String(error)}`);
+    activeStreamKind = null;
     resumeAfterReload = false;
     destroyStreamPlayer(video);
   }
@@ -464,6 +529,7 @@ function destroyStreamPlayer(video?: HTMLVideoElement) {
     }
 
     nativeHlsVideo = null;
+    activeStreamKind = null;
 
     if (shouldResetVideo && resetTarget) {
       resetVideo(resetTarget);
