@@ -42,7 +42,7 @@ const art = new Artplayer({
   setting: false,
   pip: true,
   fullscreen: true,
-  fullscreenWeb: true,
+  fullscreenWeb: false,
   screenshot: playerConfig.screenshot,
   mutex: true,
   autoMini: false,
