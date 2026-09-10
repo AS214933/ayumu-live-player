@@ -81,3 +81,46 @@ body {
 .player-error[hidden] {
   display: none;
 }
+
+.art-video-player .art-control[class*="art-control-template-"] {
+  width: auto;
+  max-width: 148px;
+  padding: 0 8px;
+}
+
+.player-template-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 132px;
+  min-width: 0;
+}
+
+.player-template-control-label {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.player-template-control-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 520px) {
+  .art-video-player .art-control[class*="art-control-template-"] {
+    max-width: 104px;
+    padding: 0 6px;
+  }
+
+  .player-template-control {
+    max-width: 92px;
+    gap: 4px;
+  }
+
+  .player-template-control-label {
+    display: none;
+  }
+}

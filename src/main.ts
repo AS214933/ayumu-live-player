@@ -1,9 +1,69 @@
-import Artplayer from "artplayer";
+import Artplayer, { type Setting, type SettingOption } from "artplayer";
 import Hls from "hls.js";
 import mpegts from "mpegts.js";
 import { initAnalytics, trackClarityEvent } from "./analytics";
-import { playerConfig, type StreamFormat, type StreamQuality } from "./playerConfig";
+import {
+  playerConfig,
+  type StreamFormat,
+  type StreamQuality,
+  type TemplateControlCondition,
+  type TemplateValue,
+} from "./playerConfig";
+import {
+  resolvePlayerSources,
+  type ResolvedTemplateSource,
+  type TemplateContext,
+  type TemplateSelectionControl,
+  type TemplateSelectionOption,
+} from "./qualityTemplates";
 import "./style.css";
+
+type TemplateSelector = {
+  default?: boolean;
+  html: string | HTMLElement;
+  value?: TemplateValue;
+};
+
+type TemplateControlOption = {
+  name: string;
+  position: "right";
+  index?: number;
+  html: string;
+  tooltip: string;
+  selector: TemplateSelector[];
+  style?: Partial<CSSStyleDeclaration>;
+  mounted?: (element: HTMLElement) => void;
+  beforeUnmount?: () => void;
+  onSelect: (selector: TemplateSelector) => string;
+};
+
+type MediaSourceConstructorLike = {
+  isTypeSupported?: (mimeType: string) => boolean;
+};
+
+type WindowWithMediaSourceVariants = typeof window & {
+  ManagedMediaSource?: MediaSourceConstructorLike;
+  WebKitMediaSource?: MediaSourceConstructorLike;
+};
+
+type VideoWithLegacyFrames = HTMLVideoElement & {
+  webkitDecodedFrameCount?: number;
+};
+
+type VideoFrameSnapshot = {
+  decodedFrames: number | null;
+  totalFrames: number | null;
+};
+
+const HEVC_FIRST_FRAME_TIMEOUT_MS = 10_000;
+const HEVC_MIME_TYPES = [
+  'video/mp4; codecs="hvc1.1.6.L93.B0"',
+  'video/mp4; codecs="hev1.1.6.L93.B0"',
+  'video/mp4; codecs="hvc1.1.6.L120.B0"',
+  'video/mp4; codecs="hev1.1.6.L120.B0"',
+  'video/mp4; codecs="hvc1.2.4.L120.B0"',
+  'video/mp4; codecs="hev1.2.4.L120.B0"',
+];
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -13,7 +73,17 @@ if (!app) {
 
 initAnalytics();
 
-const defaultQuality = getDefaultQuality(playerConfig.qualities);
+const playerSources = resolvePlayerSources(playerConfig);
+const streamQualities = playerSources.qualities;
+const templateSource = playerSources.template;
+let selectedTemplateValues: TemplateContext | null = templateSource
+  ? { ...templateSource.selectedValues }
+  : null;
+const templateControlElements = new Map<string, HTMLElement>();
+const templateControlOptions = createTemplateControlOptions(templateSource);
+const templateSettingOptions = createTemplateSettingOptions(templateSource);
+const hasTemplateSettingControls = hasTemplateSettingControlsEnabled(templateSource);
+const defaultQuality = getDefaultQuality(streamQualities);
 let errorOverlay: HTMLDivElement | null = null;
 let pauseFrameOverlay: HTMLDivElement | null = null;
 let pendingErrorMessage: string | null = null;
@@ -21,7 +91,9 @@ let flvPlayer: mpegts.Player | null = null;
 let hlsPlayer: Hls | null = null;
 let nativeHlsVideo: HTMLVideoElement | null = null;
 let activeStreamKind: "flv" | "m3u8" | "native-hls" | null = null;
+let activeStreamUrl: string | null = null;
 let currentQuality: StreamQuality = defaultQuality;
+let hevcFirstFrameWatchCleanup: (() => void) | null = null;
 let streamStoppedByPause = false;
 let resumeAfterReload = false;
 let isDestroyingStream = false;
@@ -39,7 +111,7 @@ const art = new Artplayer({
   volume: 1,
   isLive: true,
   playbackRate: false,
-  setting: false,
+  setting: hasTemplateSettingControls,
   pip: true,
   fullscreen: true,
   fullscreenWeb: false,
@@ -48,11 +120,15 @@ const art = new Artplayer({
   autoMini: false,
   hotkey: true,
   lock: true,
-  quality: playerConfig.qualities.map((quality) => ({
-    html: quality.name,
-    url: quality.url,
-    default: quality.url === defaultQuality.url,
-  })),
+  controls: templateControlOptions,
+  settings: templateSettingOptions,
+  quality: playerSources.isComplexMode
+    ? []
+    : streamQualities.map((quality) => ({
+        html: quality.name,
+        url: quality.url,
+        default: quality.url === defaultQuality.url,
+      })),
   customType: {
     flv(video: HTMLVideoElement, url: string) {
       loadStreamSource(video, getQualityByUrl(url));
@@ -71,6 +147,7 @@ const art = new Artplayer({
 installControlsAutoHide(art);
 installPauseFetchControl(art);
 removeLiveProgressContainer(art);
+refreshTemplateControlsVisibility();
 
 pauseFrameOverlay = createPauseFrameOverlay(app);
 errorOverlay = createErrorOverlay(app);
@@ -89,6 +166,10 @@ window.addEventListener("beforeunload", () => {
   destroyStreamPlayer(art.video);
 });
 
+art.on("video:play", () => {
+  startHevcFirstFrameWatch(art.video, currentQuality);
+});
+
 function getDefaultQuality(qualities: StreamQuality[]): StreamQuality {
   if (qualities.length === 0) {
     throw new Error("至少要配置一个清晰度源。");
@@ -103,6 +184,273 @@ function createPublicAssetUrlResolver(baseUrl: string) {
     const cleanPath = path.replace(/^\/+/, "");
     return `${cleanBase}${cleanPath}`;
   };
+}
+
+function createTemplateControlOptions(source: ResolvedTemplateSource | undefined): TemplateControlOption[] {
+  if (!source) {
+    return [];
+  }
+
+  return source.controls
+    .filter((control) => control.placement === "control")
+    .map(createTemplateControlOption);
+}
+
+function createTemplateControlOption(control: TemplateSelectionControl): TemplateControlOption {
+  return {
+    name: `template-${control.name}`,
+    position: "right" as const,
+    index: control.index,
+    html: renderTemplateControlHtml(control),
+    tooltip: control.label,
+    selector: control.options.map((option) => ({
+      html: option.label,
+      value: option.value,
+      default: isSelectedTemplateOption(control, option),
+    })),
+    style: getTemplateControlVisibilityStyle(control),
+    mounted(element: HTMLElement) {
+      templateControlElements.set(control.name, element);
+      updateTemplateControlVisibility(control);
+    },
+    beforeUnmount() {
+      templateControlElements.delete(control.name);
+    },
+    onSelect(selector: TemplateSelector) {
+      selectTemplateVariable(control.name, getTemplateOptionValue(control, selector.value));
+      return renderTemplateControlHtml(control);
+    },
+  };
+}
+
+function createTemplateSettingOptions(source: ResolvedTemplateSource | undefined): Setting[] {
+  if (!source) {
+    return [];
+  }
+
+  return source.controls
+    .filter((control) => control.placement === "setting" && isTemplateControlVisible(control))
+    .map(createTemplateSettingOption);
+}
+
+function hasTemplateSettingControlsEnabled(source: ResolvedTemplateSource | undefined) {
+  return Boolean(source?.controls.some((control) => control.placement === "setting"));
+}
+
+function createTemplateSettingOption(control: TemplateSelectionControl): Setting {
+  return {
+    name: getTemplateSettingOptionName(control),
+    html: control.label,
+    tooltip: getSelectedTemplateValueLabel(control),
+    selector: control.options.map((option) => ({
+      name: `template-${control.name}-${String(option.value)}`,
+      html: option.label,
+      value: option.value,
+      default: isSelectedTemplateOption(control, option),
+    })),
+    onSelect(item: SettingOption) {
+      const value = getTemplateOptionValue(control, item.value);
+      selectTemplateVariable(control.name, value);
+      return getSelectedTemplateValueLabel(control);
+    },
+  };
+}
+
+function selectTemplateVariable(name: string, value: TemplateValue) {
+  if (!templateSource || !selectedTemplateValues) {
+    return;
+  }
+
+  if (isSameTemplateValue(selectedTemplateValues[name], value)) {
+    return;
+  }
+
+  selectedTemplateValues = {
+    ...selectedTemplateValues,
+    [name]: value,
+  };
+  refreshTemplateControlsVisibility();
+
+  const nextQuality = getTemplateQuality(selectedTemplateValues);
+  currentQuality = nextQuality;
+  trackClarityEvent("template_variable_changed");
+
+  if (art.video.paused || streamStoppedByPause) {
+    if (hasActiveStreamSource() && !streamStoppedByPause) {
+      stopStreamFetching();
+    }
+
+    streamStoppedByPause = true;
+    art.notice.show = nextQuality.name;
+    return;
+  }
+
+  isTransitioningStream = true;
+
+  void art
+    .switchQuality(nextQuality.url)
+    .catch((error) => {
+      console.warn("Failed to switch template source:", error);
+    })
+    .finally(() => {
+      isTransitioningStream = false;
+    });
+}
+
+function getTemplateQuality(values: TemplateContext): StreamQuality {
+  if (!templateSource) {
+    return currentQuality;
+  }
+
+  const nextQuality = templateSource.createQuality(values);
+  return streamQualities.find((quality) => quality.url === nextQuality.url) ?? nextQuality;
+}
+
+function refreshTemplateControlsVisibility() {
+  if (!templateSource) {
+    return;
+  }
+
+  for (const control of templateSource.controls) {
+    updateTemplateControlVisibility(control);
+    updateTemplateSettingVisibility(control);
+  }
+}
+
+function refreshTemplateOptionSelection(name: string) {
+  if (!templateSource) {
+    return;
+  }
+
+  const control = templateSource.controls.find((item) => item.name === name);
+
+  if (!control) {
+    return;
+  }
+
+  if (control.placement === "control") {
+    art.controls.update(createTemplateControlOption(control));
+    return;
+  }
+
+  updateTemplateSettingVisibility(control);
+
+  if (isTemplateControlVisible(control)) {
+    art.setting.update(createTemplateSettingOption(control));
+  }
+}
+
+function updateTemplateControlVisibility(control: TemplateSelectionControl) {
+  if (control.placement !== "control") {
+    return;
+  }
+
+  const element = templateControlElements.get(control.name);
+
+  if (!element) {
+    return;
+  }
+
+  element.style.display = isTemplateControlVisible(control) ? "" : "none";
+}
+
+function updateTemplateSettingVisibility(control: TemplateSelectionControl) {
+  if (control.placement !== "setting") {
+    return;
+  }
+
+  const optionName = getTemplateSettingOptionName(control);
+  const settingOption = art.setting.find(optionName);
+  const visible = isTemplateControlVisible(control);
+
+  if (visible && !settingOption) {
+    art.setting.add(createTemplateSettingOption(control));
+    return;
+  }
+
+  if (!visible && settingOption) {
+    art.setting.remove(optionName);
+  }
+}
+
+function getTemplateSettingOptionName(control: TemplateSelectionControl) {
+  return `template-${control.name}`;
+}
+
+function getTemplateControlVisibilityStyle(
+  control: TemplateSelectionControl,
+): Partial<CSSStyleDeclaration> | undefined {
+  return isTemplateControlVisible(control) ? undefined : { display: "none" };
+}
+
+function isTemplateControlVisible(control: TemplateSelectionControl) {
+  if (!control.hiddenWhen || !selectedTemplateValues) {
+    return true;
+  }
+
+  return !matchesTemplateControlCondition(control.hiddenWhen, selectedTemplateValues);
+}
+
+function matchesTemplateControlCondition(
+  condition: TemplateControlCondition | TemplateControlCondition[],
+  values: TemplateContext,
+) {
+  const conditions = Array.isArray(condition) ? condition : [condition];
+
+  return conditions.some((item) => {
+    const entries = Object.entries(item);
+
+    return entries.length > 0 && entries.every(
+      ([name, value]) => isSameTemplateValue(values[name], value),
+    );
+  });
+}
+
+function renderTemplateControlHtml(control: TemplateSelectionControl) {
+  return `<span class="player-template-control"><span class="player-template-control-label">${escapeHtml(
+    control.label,
+  )}</span><span class="player-template-control-value">${escapeHtml(
+    getSelectedTemplateValueLabel(control),
+  )}</span></span>`;
+}
+
+function getSelectedTemplateValueLabel(control: TemplateSelectionControl) {
+  const selectedValue = selectedTemplateValues?.[control.name] ?? control.selectedValue;
+  const selectedOption = control.options.find((option) => isSameTemplateValue(option.value, selectedValue));
+
+  return selectedOption?.label ?? String(selectedValue);
+}
+
+function isSelectedTemplateOption(control: TemplateSelectionControl, option: TemplateSelectionOption) {
+  const selectedValue = selectedTemplateValues?.[control.name] ?? control.selectedValue;
+  return isSameTemplateValue(option.value, selectedValue);
+}
+
+function getTemplateOptionValue(control: TemplateSelectionControl, value: TemplateSelector["value"]): TemplateValue {
+  return control.options.find((option) => isSameTemplateValue(option.value, value))?.value ?? String(value ?? "");
+}
+
+function isSameTemplateValue(left: TemplateValue | undefined, right: TemplateValue | undefined) {
+  return String(left) === String(right);
+}
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      case "'":
+        return "&#39;";
+      default:
+        return char;
+    }
+  });
 }
 
 function installControlsAutoHide(player: Artplayer) {
@@ -194,7 +542,7 @@ function getQualityByUrl(url: string): StreamQuality {
   const format = inferStreamFormat(url);
 
   return (
-    playerConfig.qualities.find((quality) => quality.url === url) ?? {
+    streamQualities.find((quality) => quality.url === url) ?? {
       name:
         format === "m3u8"
           ? "自定义 M3U8"
@@ -253,6 +601,12 @@ function restartStreamFetching(video: HTMLVideoElement) {
   isTransitioningStream = true;
 
   try {
+    if (activeStreamUrl !== currentQuality.url) {
+      loadStreamSource(video, currentQuality);
+      streamStoppedByPause = false;
+      return;
+    }
+
     if (activeStreamKind === "flv" && flvPlayer) {
       flvPlayer.load();
       streamStoppedByPause = false;
@@ -288,7 +642,31 @@ function loadStreamSource(video: HTMLVideoElement, quality: StreamQuality) {
   }
 
   currentQuality = quality;
+  const unsupportedHevcMessage = getUnsupportedHevcPlaybackMessage(video, quality, format);
+
+  if (unsupportedHevcMessage) {
+    trackClarityEvent("hevc_source_load_failed");
+
+    if (switchToAvcFallback(video, quality, unsupportedHevcMessage)) {
+      return;
+    }
+
+    isTransitioningStream = true;
+
+    try {
+      destroyStreamPlayer(video);
+      hidePlayerError();
+      showPlayerError(unsupportedHevcMessage);
+      resumeAfterReload = false;
+    } finally {
+      isTransitioningStream = false;
+    }
+
+    return;
+  }
+
   isTransitioningStream = true;
+  clearHevcFirstFrameWatch();
   destroyStreamPlayer(video);
   hidePlayerError();
 
@@ -304,6 +682,244 @@ function loadStreamSource(video: HTMLVideoElement, quality: StreamQuality) {
   }
 }
 
+function getUnsupportedHevcPlaybackMessage(
+  video: HTMLVideoElement,
+  quality: StreamQuality,
+  format: StreamFormat,
+): string | null {
+  if (quality.codec !== "hevc") {
+    return null;
+  }
+
+  if (format === "flv") {
+    return isHevcMsePlaybackSupported()
+      ? null
+      : "当前浏览器/系统不支持通过 MSE 播放 HEVC/H.265 FLV，已无法显示这个编码。";
+  }
+
+  if (canUseNativeHls(video) && isHevcNativePlaybackSupported(video)) {
+    return null;
+  }
+
+  if (Hls.isSupported() && isHevcMsePlaybackSupported()) {
+    return null;
+  }
+
+  return "当前浏览器/系统不支持播放 HEVC/H.265 的 M3U8，已无法显示这个编码。";
+}
+
+function switchToAvcFallback(
+  video: HTMLVideoElement,
+  failedQuality: StreamQuality,
+  reason: string,
+) {
+  if (failedQuality.codec !== "hevc") {
+    return false;
+  }
+
+  const fallbackQuality = getAvcFallbackQuality(failedQuality);
+
+  if (
+    !fallbackQuality ||
+    fallbackQuality.codec !== "avc" ||
+    fallbackQuality.url === failedQuality.url
+  ) {
+    return false;
+  }
+
+  applyAvcFallbackSelection();
+  console.warn(reason);
+  art.notice.show = "HEVC 当前无法显示，已自动切换 AVC。";
+  loadStreamSource(video, fallbackQuality);
+  return true;
+}
+
+function getAvcFallbackQuality(failedQuality: StreamQuality): StreamQuality | null {
+  if (templateSource && selectedTemplateValues && hasOwnTemplateValue(selectedTemplateValues, "codec")) {
+    return getTemplateQuality({
+      ...selectedTemplateValues,
+      codec: "avc",
+    });
+  }
+
+  const failedFormat = getStreamFormat(failedQuality);
+  return (
+    streamQualities.find(
+      (quality) =>
+        quality.codec === "avc" &&
+        quality.url !== failedQuality.url &&
+        getStreamFormat(quality) === failedFormat,
+    ) ??
+    streamQualities.find(
+      (quality) => quality.codec === "avc" && quality.url !== failedQuality.url,
+    ) ??
+    null
+  );
+}
+
+function applyAvcFallbackSelection() {
+  if (!templateSource || !selectedTemplateValues || !hasOwnTemplateValue(selectedTemplateValues, "codec")) {
+    return;
+  }
+
+  if (isSameTemplateValue(selectedTemplateValues.codec, "avc")) {
+    return;
+  }
+
+  selectedTemplateValues = {
+    ...selectedTemplateValues,
+    codec: "avc",
+  };
+  refreshTemplateControlsVisibility();
+  refreshTemplateOptionSelection("codec");
+}
+
+function hasOwnTemplateValue(values: TemplateContext, name: string) {
+  return Object.prototype.hasOwnProperty.call(values, name);
+}
+
+function startHevcFirstFrameWatch(video: HTMLVideoElement, quality: StreamQuality) {
+  clearHevcFirstFrameWatch();
+
+  if (quality.codec !== "hevc") {
+    return;
+  }
+
+  const sourceUrl = quality.url;
+  const startedFrame = getVideoFrameSnapshot(video);
+
+  const handleFrameReady = () => {
+    if (currentQuality.url === sourceUrl && hasVideoFrameAdvanced(video, startedFrame)) {
+      clearHevcFirstFrameWatch();
+    }
+  };
+
+  const handleVideoError = () => {
+    if (currentQuality.url === sourceUrl) {
+      handleHevcPlaybackFailure(video, quality, "HEVC 播放失败，当前环境无法显示这个编码。");
+    }
+  };
+
+  const timeoutId = window.setTimeout(() => {
+    if (
+      currentQuality.url !== sourceUrl ||
+      activeStreamUrl !== sourceUrl ||
+      streamStoppedByPause ||
+      video.paused
+    ) {
+      clearHevcFirstFrameWatch();
+      return;
+    }
+
+    if (!hasVideoFrameAdvanced(video, startedFrame)) {
+      handleHevcPlaybackFailure(video, quality, "HEVC 已开始加载，但没有输出可显示的画面。");
+    }
+  }, HEVC_FIRST_FRAME_TIMEOUT_MS);
+  const events: Array<[string, EventListener]> = [
+    ["loadeddata", handleFrameReady],
+    ["playing", handleFrameReady],
+    ["timeupdate", handleFrameReady],
+    ["resize", handleFrameReady],
+    ["error", handleVideoError],
+  ];
+
+  for (const [eventName, listener] of events) {
+    video.addEventListener(eventName, listener);
+  }
+
+  hevcFirstFrameWatchCleanup = () => {
+    window.clearTimeout(timeoutId);
+
+    for (const [eventName, listener] of events) {
+      video.removeEventListener(eventName, listener);
+    }
+  };
+}
+
+function clearHevcFirstFrameWatch() {
+  hevcFirstFrameWatchCleanup?.();
+  hevcFirstFrameWatchCleanup = null;
+}
+
+function handleHevcPlaybackFailure(
+  video: HTMLVideoElement,
+  failedQuality: StreamQuality,
+  reason: string,
+) {
+  clearHevcFirstFrameWatch();
+
+  if (currentQuality.url !== failedQuality.url || activeStreamUrl !== failedQuality.url) {
+    return;
+  }
+
+  trackClarityEvent("hevc_source_load_failed");
+  console.warn(reason);
+
+  if (switchToAvcFallback(video, failedQuality, reason)) {
+    return;
+  }
+
+  showPlayerError(`${reason} 请切换 AVC 或换用支持 HEVC/H.265 的浏览器。`);
+  resumeAfterReload = false;
+}
+
+function getVideoFrameSnapshot(video: HTMLVideoElement): VideoFrameSnapshot {
+  const playbackQuality = video.getVideoPlaybackQuality?.();
+  const legacyVideo = video as VideoWithLegacyFrames;
+
+  return {
+    decodedFrames:
+      typeof legacyVideo.webkitDecodedFrameCount === "number"
+        ? legacyVideo.webkitDecodedFrameCount
+        : null,
+    totalFrames: playbackQuality?.totalVideoFrames ?? null,
+  };
+}
+
+function hasVideoFrameAdvanced(video: HTMLVideoElement, startedFrame: VideoFrameSnapshot) {
+  const currentFrame = getVideoFrameSnapshot(video);
+
+  if (startedFrame.totalFrames !== null && currentFrame.totalFrames !== null) {
+    return currentFrame.totalFrames > startedFrame.totalFrames;
+  }
+
+  if (startedFrame.decodedFrames !== null && currentFrame.decodedFrames !== null) {
+    return currentFrame.decodedFrames > startedFrame.decodedFrames;
+  }
+
+  return video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && video.videoHeight > 0;
+}
+
+function isHevcMsePlaybackSupported(features?: ReturnType<typeof mpegts.getFeatureList>) {
+  return Boolean(
+    features?.mseH265Playback ||
+      getMediaSourceVariants().some((mediaSource) =>
+        HEVC_MIME_TYPES.some((mimeType) => mediaSource.isTypeSupported?.(mimeType)),
+      ),
+  );
+}
+
+function getMediaSourceVariants(): MediaSourceConstructorLike[] {
+  const currentWindow = window as WindowWithMediaSourceVariants;
+
+  return [currentWindow.MediaSource, currentWindow.ManagedMediaSource, currentWindow.WebKitMediaSource]
+    .filter((mediaSource): mediaSource is MediaSourceConstructorLike => Boolean(mediaSource));
+}
+
+function canUseNativeHls(video: HTMLVideoElement) {
+  return canPlayType(video, "application/vnd.apple.mpegurl") || canPlayType(video, "application/x-mpegURL");
+}
+
+function isHevcNativePlaybackSupported(video: HTMLVideoElement) {
+  return HEVC_MIME_TYPES.some((mimeType) => canPlayType(video, mimeType));
+}
+
+function canPlayType(video: HTMLVideoElement, mimeType: string) {
+  const result = video.canPlayType(mimeType);
+  return result === "probably" || result === "maybe";
+}
+
+
 function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
   const features = mpegts.getFeatureList();
   trackClarityEvent("flv_source_loaded");
@@ -312,14 +928,23 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
     trackClarityEvent("flv_source_load_failed");
     showPlayerError("当前浏览器不支持 FLV/MSE 播放，请更换支持 Media Source Extensions 的浏览器。");
     activeStreamKind = null;
+    activeStreamUrl = null;
     resumeAfterReload = false;
     return;
   }
 
-  if (quality.codec === "hevc" && !features.mseH265Playback) {
+  if (quality.codec === "hevc" && !isHevcMsePlaybackSupported(features)) {
+    const message = "当前浏览器不支持 HEVC/H.265 的 MSE 播放，请切换 AVC 清晰度或使用支持 HEVC 的浏览器。";
+
     trackClarityEvent("flv_source_load_failed");
-    showPlayerError("当前浏览器不支持 HEVC/H.265 的 MSE 播放，请切换 AVC 清晰度或使用支持 HEVC 的浏览器。");
+
+    if (switchToAvcFallback(video, quality, message)) {
+      return;
+    }
+
+    showPlayerError(message);
     activeStreamKind = null;
+    activeStreamUrl = null;
     resumeAfterReload = false;
     return;
   }
@@ -342,18 +967,28 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
     );
 
     flvPlayer.on(mpegts.Events.ERROR, (errorType, errorDetail, errorInfo) => {
+      const detail = String(errorDetail || errorType);
+
       console.error("FLV playback error:", errorType, errorDetail, errorInfo);
-      showPlayerError(`FLV 加载失败：${String(errorDetail || errorType)}`);
+
+      if (quality.codec === "hevc" && switchToAvcFallback(video, quality, `HEVC FLV 加载失败：${detail}`)) {
+        return;
+      }
+
+      showPlayerError(`FLV 加载失败：${detail}`);
     });
 
     flvPlayer.attachMediaElement(video);
     flvPlayer.load();
     activeStreamKind = "flv";
+    activeStreamUrl = quality.url;
     streamStoppedByPause = false;
+    startHevcFirstFrameWatch(video, quality);
   } catch (error) {
     trackClarityEvent("flv_source_load_failed");
     showPlayerError(`FLV 加载失败：${error instanceof Error ? error.message : String(error)}`);
     activeStreamKind = null;
+    activeStreamUrl = null;
     resumeAfterReload = false;
     destroyStreamPlayer(video);
   }
@@ -362,12 +997,14 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
 function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
   trackClarityEvent("m3u8_source_loaded");
 
-  if (video.canPlayType("application/vnd.apple.mpegurl")) {
+  if (canUseNativeHls(video)) {
     nativeHlsVideo = video;
     video.src = quality.url;
     video.load();
     activeStreamKind = "native-hls";
+    activeStreamUrl = quality.url;
     streamStoppedByPause = false;
+    startHevcFirstFrameWatch(video, quality);
     return;
   }
 
@@ -375,6 +1012,7 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
     trackClarityEvent("m3u8_source_load_failed");
     showPlayerError("当前浏览器不支持 HLS/M3U8 播放，请更换支持 Media Source Extensions 或原生 HLS 的浏览器。");
     activeStreamKind = null;
+    activeStreamUrl = null;
     resumeAfterReload = false;
     return;
   }
@@ -391,8 +1029,15 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
       console.error("HLS playback error:", data);
 
       if (data.fatal) {
+        const detail = String(data.details || data.type);
+
         trackClarityEvent("m3u8_source_load_failed");
-        showPlayerError(`M3U8 加载失败：${String(data.details || data.type)}`);
+
+        if (quality.codec === "hevc" && switchToAvcFallback(video, quality, `HEVC M3U8 加载失败：${detail}`)) {
+          return;
+        }
+
+        showPlayerError(`M3U8 加载失败：${detail}`);
         activeStreamKind = null;
         resumeAfterReload = false;
         destroyStreamPlayer(video);
@@ -402,11 +1047,21 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
     hlsPlayer.loadSource(quality.url);
     hlsPlayer.attachMedia(video);
     activeStreamKind = "m3u8";
+    activeStreamUrl = quality.url;
     streamStoppedByPause = false;
+    startHevcFirstFrameWatch(video, quality);
   } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+
     trackClarityEvent("m3u8_source_load_failed");
-    showPlayerError(`M3U8 加载失败：${error instanceof Error ? error.message : String(error)}`);
+
+    if (quality.codec === "hevc" && switchToAvcFallback(video, quality, `HEVC M3U8 加载失败：${detail}`)) {
+      return;
+    }
+
+    showPlayerError(`M3U8 加载失败：${detail}`);
     activeStreamKind = null;
+    activeStreamUrl = null;
     resumeAfterReload = false;
     destroyStreamPlayer(video);
   }
@@ -503,6 +1158,7 @@ function destroyStreamPlayer(video?: HTMLVideoElement) {
   }
 
   isDestroyingStream = true;
+  clearHevcFirstFrameWatch();
 
   try {
     const shouldResetVideo = hasActiveStreamSource();
@@ -530,6 +1186,7 @@ function destroyStreamPlayer(video?: HTMLVideoElement) {
 
     nativeHlsVideo = null;
     activeStreamKind = null;
+    activeStreamUrl = null;
 
     if (shouldResetVideo && resetTarget) {
       resetVideo(resetTarget);
