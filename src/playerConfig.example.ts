@@ -49,6 +49,8 @@ export type ComplexPlayerConfig = {
 
 export type PlayerConfig = {
   title: string;
+  StreamName: string;
+  AppName: string;
   theme: string;
   qualities: StreamQuality[];
   complex?: ComplexPlayerConfig;
@@ -63,6 +65,9 @@ export type AnalyticsConfig = {
 
 export const playerConfig: PlayerConfig = {
   title: "Ayumu Live",
+  // 浏览器标签页标题：StreamName 为空时只显示 AppName；两者都为空时保留 index.html 的默认标题。
+  StreamName: "",
+  AppName: "",
   theme: "#00A3FF",
   qualities: [
     {

@@ -72,6 +72,7 @@ if (!app) {
 }
 
 initAnalytics();
+applyDocumentTitle();
 
 const playerSources = resolvePlayerSources(playerConfig);
 const streamQualities = playerSources.qualities;
@@ -184,6 +185,29 @@ function createPublicAssetUrlResolver(baseUrl: string) {
     const cleanPath = path.replace(/^\/+/, "");
     return `${cleanBase}${cleanPath}`;
   };
+}
+
+function applyDocumentTitle() {
+  const streamName = normalizeDocumentTitlePart(playerConfig.StreamName);
+  const appName = normalizeDocumentTitlePart(playerConfig.AppName);
+
+  if (streamName && appName) {
+    document.title = `${streamName} - ${appName}`;
+    return;
+  }
+
+  if (appName) {
+    document.title = appName;
+    return;
+  }
+
+  if (streamName) {
+    document.title = streamName;
+  }
+}
+
+function normalizeDocumentTitlePart(value: string) {
+  return value.trim();
 }
 
 function createTemplateControlOptions(source: ResolvedTemplateSource | undefined): TemplateControlOption[] {
