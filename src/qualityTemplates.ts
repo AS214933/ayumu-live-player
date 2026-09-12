@@ -191,26 +191,30 @@ function getControlValues(
   name: string,
   controlConfig: TemplateControlConfig | undefined,
 ): TemplateValue[] {
-  const values = Object.keys(controlConfig?.valueLabels ?? {});
+  const hasExplicitValues = Boolean(controlConfig?.values);
+  const values = [...(controlConfig?.values ?? Object.keys(controlConfig?.valueLabels ?? {}))];
 
-  if (name !== "quality") {
+  if (name !== "quality" || hasExplicitValues) {
     return values;
   }
 
   return values.sort(compareQualityValues);
 }
 
-function compareQualityValues(left: string, right: string) {
-  if (left === "" && right !== "") {
+function compareQualityValues(left: TemplateValue, right: TemplateValue) {
+  const leftValue = String(left);
+  const rightValue = String(right);
+
+  if (leftValue === "" && rightValue !== "") {
     return -1;
   }
 
-  if (right === "" && left !== "") {
+  if (rightValue === "" && leftValue !== "") {
     return 1;
   }
 
-  const leftNumber = Number(left);
-  const rightNumber = Number(right);
+  const leftNumber = Number(leftValue);
+  const rightNumber = Number(rightValue);
 
   if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
     return rightNumber - leftNumber;

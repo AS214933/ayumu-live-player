@@ -20,6 +20,7 @@ export type TemplateControlConfig = {
   index?: number;
   hidden?: boolean;
   hiddenWhen?: TemplateControlCondition | TemplateControlCondition[];
+  values?: TemplateValue[];
   valueLabels?: Record<string, string>;
 };
 export type TemplateDerivedVariableConfig = {
@@ -131,6 +132,7 @@ export const playerConfig: PlayerConfig = {
         label: "线路",
         enabled: true,
         placement: "control",
+        values: ["01", "02", "03"],
         valueLabels: {
           "01": "线路 1",
           "02": "线路 2",
@@ -175,7 +177,7 @@ export const playerConfig: PlayerConfig = {
       },
     },
     defaultValues: {
-      route_id: "00",
+      route_id: "01",
       quality: "",
       codec: "avc",
       stream_format: "m3u8",
