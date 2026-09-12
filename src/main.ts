@@ -1,9 +1,10 @@
 import Artplayer, { type Setting, type SettingOption } from "artplayer";
-import Hls from "hls.js";
+import Hls, { FetchLoader } from "hls.js";
 import mpegts from "mpegts.js";
 import { initAnalytics, trackClarityEvent } from "./analytics";
 import {
   playerConfig,
+  type RequestHeaderConfig,
   type StreamFormat,
   type StreamQuality,
   type TemplateControlCondition,
@@ -50,9 +51,18 @@ type VideoWithLegacyFrames = HTMLVideoElement & {
   webkitDecodedFrameCount?: number;
 };
 
+type VideoWithReferrerPolicy = HTMLVideoElement & {
+  referrerPolicy?: ReferrerPolicy;
+};
+
 type VideoFrameSnapshot = {
   decodedFrames: number | null;
   totalFrames: number | null;
+};
+
+type MpegtsRequestConfig = {
+  headers?: Record<string, string>;
+  referrerPolicy?: ReferrerPolicy;
 };
 
 const HEVC_FIRST_FRAME_TIMEOUT_MS = 10_000;
@@ -64,6 +74,30 @@ const HEVC_MIME_TYPES = [
   'video/mp4; codecs="hvc1.2.4.L120.B0"',
   'video/mp4; codecs="hev1.2.4.L120.B0"',
 ];
+const FORBIDDEN_REQUEST_HEADER_NAMES = new Set([
+  "accept-charset",
+  "accept-encoding",
+  "access-control-request-headers",
+  "access-control-request-method",
+  "connection",
+  "content-length",
+  "cookie",
+  "cookie2",
+  "date",
+  "dnt",
+  "expect",
+  "host",
+  "keep-alive",
+  "origin",
+  "refer",
+  "referer",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "user-agent",
+  "via",
+]);
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -99,6 +133,9 @@ let streamStoppedByPause = false;
 let resumeAfterReload = false;
 let isDestroyingStream = false;
 let isTransitioningStream = false;
+let warnedNativeHlsRequestConfig = false;
+let warnedFetchReferrerFallback = false;
+const warnedForbiddenRequestHeaders = new Set<string>();
 const publicAssetUrl = createPublicAssetUrlResolver(import.meta.env.BASE_URL);
 
 const art = new Artplayer({
@@ -185,6 +222,206 @@ function createPublicAssetUrlResolver(baseUrl: string) {
     const cleanPath = path.replace(/^\/+/, "");
     return `${cleanBase}${cleanPath}`;
   };
+}
+
+function getStreamRequestHeaders(
+  requestConfig: RequestHeaderConfig | undefined = playerConfig.request,
+): Record<string, string> | undefined {
+  const headers = requestConfig?.headers;
+
+  if (!headers) {
+    return undefined;
+  }
+
+  const nextHeaders: Record<string, string> = {};
+
+  for (const [name, value] of Object.entries(headers)) {
+    const headerName = name.trim();
+    const headerValue = value.trim();
+
+    if (!headerName || !headerValue) {
+      continue;
+    }
+
+    if (isForbiddenRequestHeaderName(headerName)) {
+      warnForbiddenRequestHeader(headerName);
+      continue;
+    }
+
+    nextHeaders[headerName] = headerValue;
+  }
+
+  return Object.keys(nextHeaders).length > 0 ? nextHeaders : undefined;
+}
+
+function getStreamReferrer(requestConfig: RequestHeaderConfig | undefined = playerConfig.request) {
+  return (
+    requestConfig?.referer?.trim() ||
+    requestConfig?.referrer?.trim() ||
+    requestConfig?.refer?.trim() ||
+    requestConfig?.Refer?.trim() ||
+    getHeaderValue(requestConfig?.headers, "referer") ||
+    getHeaderValue(requestConfig?.headers, "refer") ||
+    undefined
+  );
+}
+
+function getHeaderValue(headers: Record<string, string> | undefined, name: string) {
+  if (!headers) {
+    return undefined;
+  }
+
+  const entry = Object.entries(headers).find(([headerName]) => headerName.trim().toLowerCase() === name);
+  return entry?.[1].trim() || undefined;
+}
+
+function getStreamReferrerPolicy(requestConfig: RequestHeaderConfig | undefined = playerConfig.request) {
+  return requestConfig?.referrerPolicy;
+}
+
+function hasCustomStreamRequestTransportOptions() {
+  return Boolean(getStreamRequestHeaders() || getStreamReferrer());
+}
+
+function getHlsRequestLoaderConfig() {
+  if (!getStreamReferrer() || !canUseFetchRequestLoader()) {
+    return {};
+  }
+
+  return {
+    loader: FetchLoader,
+  };
+}
+
+function canUseFetchRequestLoader() {
+  return (
+    typeof window.fetch === "function" &&
+    typeof window.AbortController === "function" &&
+    typeof window.ReadableStream === "function" &&
+    typeof window.Request === "function"
+  );
+}
+
+function isForbiddenRequestHeaderName(name: string) {
+  const lowerName = name.trim().toLowerCase();
+
+  return (
+    FORBIDDEN_REQUEST_HEADER_NAMES.has(lowerName) ||
+    lowerName.startsWith("proxy-") ||
+    lowerName.startsWith("sec-")
+  );
+}
+
+function warnForbiddenRequestHeader(name: string) {
+  const lowerName = name.trim().toLowerCase();
+
+  if (warnedForbiddenRequestHeaders.has(lowerName)) {
+    return;
+  }
+
+  warnedForbiddenRequestHeaders.add(lowerName);
+  console.warn(
+    `浏览器不允许前端设置 ${name} 请求头；请使用 request.referer/referrerPolicy，或通过代理服务添加。`,
+  );
+}
+
+function createMpegtsRequestConfig(): MpegtsRequestConfig {
+  const headers = getStreamRequestHeaders();
+  const referrerPolicy = getStreamReferrerPolicy();
+
+  return {
+    ...(headers ? { headers } : {}),
+    ...(referrerPolicy ? { referrerPolicy } : {}),
+  };
+}
+
+function applyNativeVideoRequestConfig(video: HTMLVideoElement) {
+  const referrerPolicy = getStreamReferrerPolicy();
+
+  if (referrerPolicy) {
+    (video as VideoWithReferrerPolicy).referrerPolicy = referrerPolicy;
+  }
+
+  if (hasCustomStreamRequestTransportOptions()) {
+    warnNativeHlsRequestConfig();
+  }
+}
+
+function warnNativeHlsRequestConfig() {
+  if (warnedNativeHlsRequestConfig) {
+    return;
+  }
+
+  warnedNativeHlsRequestConfig = true;
+  console.warn("当前使用浏览器原生 HLS 播放，自定义 headers/referer 无法保证应用到 m3u8/ts 请求。");
+}
+
+function applyRequestHeadersToXhr(xhr: XMLHttpRequest, url: string) {
+  const headers = getStreamRequestHeaders();
+
+  if (!headers) {
+    return;
+  }
+
+  if (!xhr.readyState) {
+    xhr.open("GET", url, true);
+  }
+
+  for (const [name, value] of Object.entries(headers)) {
+    xhr.setRequestHeader(name, value);
+  }
+}
+
+function createHlsFetchRequest(url: string, initParams: RequestInit) {
+  const requestInit = applyRequestConfigToFetchInit(initParams);
+
+  try {
+    return new Request(url, requestInit);
+  } catch (error) {
+    if (!warnedFetchReferrerFallback) {
+      warnedFetchReferrerFallback = true;
+      console.warn("当前浏览器拒绝了自定义 referrer，已仅保留普通自定义 headers 重试。", error);
+    }
+
+    const fallbackInit = { ...requestInit };
+    delete fallbackInit.referrer;
+    delete fallbackInit.referrerPolicy;
+    return new Request(url, fallbackInit);
+  }
+}
+
+function applyRequestConfigToFetchInit(initParams: RequestInit): RequestInit {
+  const headers = getStreamRequestHeaders();
+  const referrer = getStreamReferrer();
+  const referrerPolicy = getStreamReferrerPolicy();
+  const requestInit: RequestInit = { ...initParams };
+
+  if (headers) {
+    requestInit.headers = mergeRequestHeaders(initParams.headers, headers);
+  }
+
+  if (referrer) {
+    requestInit.referrer = referrer;
+  }
+
+  if (referrerPolicy) {
+    requestInit.referrerPolicy = referrerPolicy;
+  }
+
+  return requestInit;
+}
+
+function mergeRequestHeaders(
+  currentHeaders: HeadersInit | undefined,
+  nextHeaders: Record<string, string>,
+): Headers {
+  const headers = new Headers(currentHeaders);
+
+  for (const [name, value] of Object.entries(nextHeaders)) {
+    headers.set(name, value);
+  }
+
+  return headers;
 }
 
 function applyDocumentTitle() {
@@ -934,6 +1171,14 @@ function canUseNativeHls(video: HTMLVideoElement) {
   return canPlayType(video, "application/vnd.apple.mpegurl") || canPlayType(video, "application/x-mpegURL");
 }
 
+function shouldUseNativeHls(video: HTMLVideoElement) {
+  if (!canUseNativeHls(video)) {
+    return false;
+  }
+
+  return !hasCustomStreamRequestTransportOptions() || !Hls.isSupported();
+}
+
 function isHevcNativePlaybackSupported(video: HTMLVideoElement) {
   return HEVC_MIME_TYPES.some((mimeType) => canPlayType(video, mimeType));
 }
@@ -974,6 +1219,8 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
   }
 
   try {
+    const requestConfig = createMpegtsRequestConfig();
+
     flvPlayer = mpegts.createPlayer(
       {
         type: "flv",
@@ -987,6 +1234,7 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
         liveBufferLatencyChasing: true,
         liveBufferLatencyMaxLatency: 1.5,
         liveBufferLatencyMinRemain: 0.5,
+        ...requestConfig,
       },
     );
 
@@ -1021,7 +1269,8 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
 function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
   trackClarityEvent("m3u8_source_loaded");
 
-  if (canUseNativeHls(video)) {
+  if (shouldUseNativeHls(video)) {
+    applyNativeVideoRequestConfig(video);
     nativeHlsVideo = video;
     video.src = quality.url;
     video.load();
@@ -1047,6 +1296,13 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
       backBufferLength: 30,
       liveSyncDurationCount: 3,
       liveMaxLatencyDurationCount: 10,
+      ...getHlsRequestLoaderConfig(),
+      xhrSetup(xhr, url) {
+        applyRequestHeadersToXhr(xhr, url);
+      },
+      fetchSetup(context, initParams) {
+        return createHlsFetchRequest(context.url, initParams);
+      },
     });
 
     hlsPlayer.on(Hls.Events.ERROR, (_event, data) => {

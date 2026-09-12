@@ -35,6 +35,15 @@ export type StreamQuality = {
   codec?: "avc" | "hevc";
 };
 
+export type RequestHeaderConfig = {
+  headers?: Record<string, string>;
+  refer?: string;
+  Refer?: string;
+  referer?: string;
+  referrer?: string;
+  referrerPolicy?: ReferrerPolicy;
+};
+
 export type ComplexPlayerConfig = {
   enabled: boolean;
   urlTemplate: string;
@@ -52,6 +61,7 @@ export type PlayerConfig = {
   StreamName: string;
   AppName: string;
   theme: string;
+  request?: RequestHeaderConfig;
   qualities: StreamQuality[];
   complex?: ComplexPlayerConfig;
   autoplay: boolean;
@@ -69,6 +79,14 @@ export const playerConfig: PlayerConfig = {
   StreamName: "",
   AppName: "",
   theme: "#00A3FF",
+  request: {
+    // 浏览器不允许前端伪造 Referer 请求头；如源站强校验 Referer，建议用代理服务补头。
+    referer: "",
+    referrerPolicy: "no-referrer-when-downgrade",
+    headers: {
+      // "X-Custom-Header": "value",
+    },
+  },
   qualities: [
     {
       name: "原画 (M3U8)",
