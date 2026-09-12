@@ -147,7 +147,7 @@ const art = new Artplayer({
   autoOrientation: playerConfig.autoorientation,
   muted: false,
   volume: 1,
-  isLive: true,
+  isLive: playerConfig.isLive,
   playbackRate: false,
   setting: hasTemplateSettingControls,
   pip: true,

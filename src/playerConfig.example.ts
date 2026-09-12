@@ -61,6 +61,7 @@ export type PlayerConfig = {
   title: string;
   StreamName: string;
   AppName: string;
+  isLive: boolean;
   theme: string;
   request?: RequestHeaderConfig;
   qualities: StreamQuality[];
@@ -79,6 +80,7 @@ export const playerConfig: PlayerConfig = {
   // 浏览器标签页标题：StreamName 为空时只显示 AppName；两者都为空时保留 index.html 的默认标题。
   StreamName: "",
   AppName: "",
+  isLive: true,
   theme: "#00A3FF",
   request: {
     // 浏览器不允许前端伪造 Referer 请求头；如源站强校验 Referer，建议用代理服务补头。
