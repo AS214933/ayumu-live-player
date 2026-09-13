@@ -144,10 +144,12 @@ let warnedNativeHlsRequestConfig = false;
 let warnedFetchReferrerFallback = false;
 const warnedForbiddenRequestHeaders = new Set<string>();
 const publicAssetUrl = createPublicAssetUrlResolver(import.meta.env.BASE_URL);
+const configuredPoster = resolveConfiguredPoster(playerConfig.poster);
 
 const art = new Artplayer({
   container: app,
   url: defaultQuality.url,
+  poster: configuredPoster,
   title: playerConfig.title,
   theme: playerConfig.theme,
   autoplay: playerConfig.autoplay,
@@ -189,6 +191,7 @@ const art = new Artplayer({
   },
 } as Artplayer["option"]);
 
+applyConfiguredVideoPoster(art.video);
 installControlsAutoHide(art);
 installPauseFetchControl(art);
 removeLiveProgressContainer(art);
@@ -229,6 +232,33 @@ function createPublicAssetUrlResolver(baseUrl: string) {
     const cleanPath = path.replace(/^\/+/, "");
     return `${cleanBase}${cleanPath}`;
   };
+}
+
+function resolveConfiguredPoster(poster: string | undefined) {
+  const normalizedPoster = poster?.trim();
+
+  if (!normalizedPoster) {
+    return "";
+  }
+
+  if (isAbsoluteAssetUrl(normalizedPoster)) {
+    return normalizedPoster;
+  }
+
+  return publicAssetUrl(normalizedPoster);
+}
+
+function isAbsoluteAssetUrl(url: string) {
+  return /^(?:[a-z][a-z\d+\-.]*:)?\/\//i.test(url) || url.startsWith("data:") || url.startsWith("blob:");
+}
+
+function applyConfiguredVideoPoster(video: HTMLVideoElement) {
+  if (configuredPoster) {
+    video.poster = configuredPoster;
+    return;
+  }
+
+  video.removeAttribute("poster");
 }
 
 function getStreamRequestHeaders(
@@ -1498,6 +1528,7 @@ function resetVideo(video: HTMLVideoElement) {
   try {
     video.pause();
     video.removeAttribute("src");
+    applyConfiguredVideoPoster(video);
     video.load();
   } catch (error) {
     console.error("Video reset failed:", error);
@@ -1545,7 +1576,7 @@ function hidePauseFrame(video: HTMLVideoElement) {
     image?.removeAttribute("src");
   }
 
-  video.removeAttribute("poster");
+  applyConfiguredVideoPoster(video);
 }
 
 function captureVideoFrame(video: HTMLVideoElement): string | null {
