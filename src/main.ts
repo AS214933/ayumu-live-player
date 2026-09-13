@@ -1,5 +1,5 @@
 import Artplayer, { type Setting, type SettingOption } from "artplayer";
-import Hls, { FetchLoader } from "hls.js";
+import Hls, { FetchLoader, type HlsConfig, type LoaderConfig } from "hls.js";
 import mpegts from "mpegts.js";
 import { initAnalytics, trackClarityEvent } from "./analytics";
 import {
@@ -63,6 +63,12 @@ type VideoFrameSnapshot = {
 type MpegtsRequestConfig = {
   headers?: Record<string, string>;
   referrerPolicy?: ReferrerPolicy;
+};
+
+type StreamRequestTimeouts = {
+  timeoutMs?: number;
+  firstByteTimeoutMs?: number;
+  segmentTimeoutMs?: number;
 };
 
 const HEVC_FIRST_FRAME_TIMEOUT_MS = 10_000;
@@ -129,6 +135,7 @@ let activeStreamKind: "flv" | "m3u8" | "native-hls" | null = null;
 let activeStreamUrl: string | null = null;
 let currentQuality: StreamQuality = defaultQuality;
 let hevcFirstFrameWatchCleanup: (() => void) | null = null;
+let streamLoadTimeoutWatchCleanup: (() => void) | null = null;
 let streamStoppedByPause = false;
 let resumeAfterReload = false;
 let isDestroyingStream = false;
@@ -279,6 +286,24 @@ function getStreamReferrerPolicy(requestConfig: RequestHeaderConfig | undefined 
   return requestConfig?.referrerPolicy;
 }
 
+function getStreamRequestTimeouts(
+  requestConfig: RequestHeaderConfig | undefined = playerConfig.request,
+): StreamRequestTimeouts {
+  return {
+    timeoutMs: normalizeRequestTimeoutMs(requestConfig?.timeoutMs),
+    firstByteTimeoutMs: normalizeRequestTimeoutMs(requestConfig?.firstByteTimeoutMs),
+    segmentTimeoutMs: normalizeRequestTimeoutMs(requestConfig?.segmentTimeoutMs),
+  };
+}
+
+function normalizeRequestTimeoutMs(value: number | undefined) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function hasStreamRequestTimeout(timeouts: StreamRequestTimeouts) {
+  return Boolean(timeouts.timeoutMs || timeouts.firstByteTimeoutMs || timeouts.segmentTimeoutMs);
+}
+
 function hasCustomStreamRequestTransportOptions() {
   return Boolean(getStreamRequestHeaders() || getStreamReferrer());
 }
@@ -290,6 +315,59 @@ function getHlsRequestLoaderConfig() {
 
   return {
     loader: FetchLoader,
+  };
+}
+
+function getHlsRequestTimeoutConfig(): Partial<
+  Pick<HlsConfig, "manifestLoadPolicy" | "playlistLoadPolicy" | "fragLoadPolicy" | "keyLoadPolicy">
+> {
+  const timeouts = getStreamRequestTimeouts();
+
+  if (!hasStreamRequestTimeout(timeouts)) {
+    return {};
+  }
+
+  const playlistTimeoutMs = timeouts.timeoutMs;
+  const segmentTimeoutMs = timeouts.segmentTimeoutMs ?? timeouts.timeoutMs;
+  const firstByteTimeoutMs = timeouts.firstByteTimeoutMs ?? timeouts.timeoutMs;
+
+  return {
+    manifestLoadPolicy: createHlsLoadPolicy(
+      Hls.DefaultConfig.manifestLoadPolicy.default,
+      playlistTimeoutMs,
+      firstByteTimeoutMs,
+    ),
+    playlistLoadPolicy: createHlsLoadPolicy(
+      Hls.DefaultConfig.playlistLoadPolicy.default,
+      playlistTimeoutMs,
+      firstByteTimeoutMs,
+    ),
+    fragLoadPolicy: createHlsLoadPolicy(
+      Hls.DefaultConfig.fragLoadPolicy.default,
+      segmentTimeoutMs,
+      firstByteTimeoutMs,
+    ),
+    keyLoadPolicy: createHlsLoadPolicy(
+      Hls.DefaultConfig.keyLoadPolicy.default,
+      segmentTimeoutMs,
+      firstByteTimeoutMs,
+    ),
+  };
+}
+
+function createHlsLoadPolicy(
+  defaultConfig: LoaderConfig,
+  timeoutMs: number | undefined,
+  firstByteTimeoutMs: number | undefined,
+) {
+  return {
+    default: {
+      ...defaultConfig,
+      maxTimeToFirstByteMs: firstByteTimeoutMs ?? defaultConfig.maxTimeToFirstByteMs,
+      maxLoadTimeMs: timeoutMs ?? defaultConfig.maxLoadTimeMs,
+      timeoutRetry: defaultConfig.timeoutRetry ? { ...defaultConfig.timeoutRetry } : null,
+      errorRetry: defaultConfig.errorRetry ? { ...defaultConfig.errorRetry } : null,
+    },
   };
 }
 
@@ -842,6 +920,7 @@ function hasActiveStreamSource() {
 function stopStreamFetching() {
   streamStoppedByPause = true;
   isTransitioningStream = true;
+  clearStreamLoadTimeoutWatch();
 
   try {
     if (activeStreamKind === "flv" && flvPlayer) {
@@ -869,14 +948,16 @@ function restartStreamFetching(video: HTMLVideoElement) {
     }
 
     if (activeStreamKind === "flv" && flvPlayer) {
-      flvPlayer.load();
       streamStoppedByPause = false;
+      startStreamLoadTimeoutWatch(video, currentQuality);
+      flvPlayer.load();
       return;
     }
 
     if (activeStreamKind === "m3u8" && hlsPlayer) {
-      hlsPlayer.startLoad();
       streamStoppedByPause = false;
+      startStreamLoadTimeoutWatch(video, currentQuality);
+      hlsPlayer.startLoad();
       return;
     }
 
@@ -928,6 +1009,7 @@ function loadStreamSource(video: HTMLVideoElement, quality: StreamQuality) {
 
   isTransitioningStream = true;
   clearHevcFirstFrameWatch();
+  clearStreamLoadTimeoutWatch();
   destroyStreamPlayer(video);
   hidePlayerError();
 
@@ -1097,6 +1179,67 @@ function startHevcFirstFrameWatch(video: HTMLVideoElement, quality: StreamQualit
   };
 }
 
+function startStreamLoadTimeoutWatch(video: HTMLVideoElement, quality: StreamQuality) {
+  clearStreamLoadTimeoutWatch();
+
+  const timeoutMs = getStreamRequestTimeouts().timeoutMs;
+
+  if (!timeoutMs) {
+    return;
+  }
+
+  const sourceUrl = quality.url;
+  const handleLoadReady = () => {
+    if (currentQuality.url === sourceUrl && activeStreamUrl === sourceUrl) {
+      clearStreamLoadTimeoutWatch();
+    }
+  };
+  const timeoutId = window.setTimeout(() => {
+    if (
+      currentQuality.url !== sourceUrl ||
+      activeStreamUrl !== sourceUrl ||
+      streamStoppedByPause ||
+      isDestroyingStream
+    ) {
+      clearStreamLoadTimeoutWatch();
+      return;
+    }
+
+    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      clearStreamLoadTimeoutWatch();
+      return;
+    }
+
+    trackClarityEvent("stream_source_load_failed");
+    showPlayerError(`拉取 ${quality.name} 超时，请检查源站响应或调大 request.timeoutMs。`);
+    resumeAfterReload = false;
+    destroyStreamPlayer(video);
+  }, timeoutMs);
+  const events: Array<[string, EventListener]> = [
+    ["loadeddata", handleLoadReady],
+    ["canplay", handleLoadReady],
+    ["playing", handleLoadReady],
+    ["error", handleLoadReady],
+  ];
+
+  for (const [eventName, listener] of events) {
+    video.addEventListener(eventName, listener);
+  }
+
+  streamLoadTimeoutWatchCleanup = () => {
+    window.clearTimeout(timeoutId);
+
+    for (const [eventName, listener] of events) {
+      video.removeEventListener(eventName, listener);
+    }
+  };
+}
+
+function clearStreamLoadTimeoutWatch() {
+  streamLoadTimeoutWatchCleanup?.();
+  streamLoadTimeoutWatchCleanup = null;
+}
+
 function clearHevcFirstFrameWatch() {
   hevcFirstFrameWatchCleanup?.();
   hevcFirstFrameWatchCleanup = null;
@@ -1225,7 +1368,7 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
       {
         type: "flv",
         url: quality.url,
-        isLive: true,
+        isLive: playerConfig.isLive,
       },
       {
         enableStashBuffer: false,
@@ -1251,10 +1394,11 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
     });
 
     flvPlayer.attachMediaElement(video);
-    flvPlayer.load();
     activeStreamKind = "flv";
     activeStreamUrl = quality.url;
     streamStoppedByPause = false;
+    startStreamLoadTimeoutWatch(video, quality);
+    flvPlayer.load();
     startHevcFirstFrameWatch(video, quality);
   } catch (error) {
     trackClarityEvent("flv_source_load_failed");
@@ -1272,11 +1416,12 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
   if (shouldUseNativeHls(video)) {
     applyNativeVideoRequestConfig(video);
     nativeHlsVideo = video;
-    video.src = quality.url;
-    video.load();
     activeStreamKind = "native-hls";
     activeStreamUrl = quality.url;
     streamStoppedByPause = false;
+    startStreamLoadTimeoutWatch(video, quality);
+    video.src = quality.url;
+    video.load();
     startHevcFirstFrameWatch(video, quality);
     return;
   }
@@ -1297,6 +1442,7 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
       liveSyncDurationCount: 3,
       liveMaxLatencyDurationCount: 10,
       ...getHlsRequestLoaderConfig(),
+      ...getHlsRequestTimeoutConfig(),
       xhrSetup(xhr, url) {
         applyRequestHeadersToXhr(xhr, url);
       },
@@ -1324,11 +1470,12 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
       }
     });
 
-    hlsPlayer.loadSource(quality.url);
-    hlsPlayer.attachMedia(video);
     activeStreamKind = "m3u8";
     activeStreamUrl = quality.url;
     streamStoppedByPause = false;
+    startStreamLoadTimeoutWatch(video, quality);
+    hlsPlayer.loadSource(quality.url);
+    hlsPlayer.attachMedia(video);
     startHevcFirstFrameWatch(video, quality);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -1439,6 +1586,7 @@ function destroyStreamPlayer(video?: HTMLVideoElement) {
 
   isDestroyingStream = true;
   clearHevcFirstFrameWatch();
+  clearStreamLoadTimeoutWatch();
 
   try {
     const shouldResetVideo = hasActiveStreamSource();

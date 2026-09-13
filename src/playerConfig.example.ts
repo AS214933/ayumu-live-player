@@ -43,6 +43,9 @@ export type RequestHeaderConfig = {
   referer?: string;
   referrer?: string;
   referrerPolicy?: ReferrerPolicy;
+  timeoutMs?: number;
+  firstByteTimeoutMs?: number;
+  segmentTimeoutMs?: number;
 };
 
 export type ComplexPlayerConfig = {
@@ -86,6 +89,9 @@ export const playerConfig: PlayerConfig = {
     // 浏览器不允许前端伪造 Referer 请求头；如源站强校验 Referer，建议用代理服务补头。
     referer: "",
     referrerPolicy: "no-referrer-when-downgrade",
+    timeoutMs: 60_000,
+    firstByteTimeoutMs: 30_000,
+    segmentTimeoutMs: 120_000,
     headers: {
       // "X-Custom-Header": "value",
     },
