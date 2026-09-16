@@ -74,7 +74,7 @@ function createBuildInfoComment(config: ResolvedConfig) {
     "  「そこまでは まだ遠いよ」",
     "  「だから僕らは がんばって挑戦だよね」",
     "  ——「勇気はどこに？君の胸に！」 / Aqours",
-    "",
+    "  =====",
     "  これは ラブライブ！サンシャイン!! Aqours Finale LoveLive! ～永久stage～ の1周年を記念して捧げます。",
     "  Aqoursの勇気が、あなたを前へと導いてくれますように。",
     "-->",
