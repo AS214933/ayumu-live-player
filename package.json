@@ -1,7 +1,7 @@
 {
   "name": "ayumu-live-player",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev-server.mjs",
@@ -15,6 +15,7 @@
     "mpegts.js": "^1.8.0"
   },
   "devDependencies": {
+    "@types/node": "^22.20.3",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
   }
