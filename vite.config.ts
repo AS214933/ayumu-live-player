@@ -65,7 +65,7 @@ function createBuildInfoComment(config: ResolvedConfig) {
     "  Powered by Vite.js & ArtPlayer.js @ Evan You",
     "  =====",
     `  Version: ${sanitizeHtmlCommentValue(branch)} @ ${sanitizeHtmlCommentValue(commit)}`,
-    `  Build Time: ${sanitizeHtmlCommentValue(buildTime)}`,
+    `  Build: ${sanitizeHtmlCommentValue(buildTime)}`,
     `  Environment: ${sanitizeHtmlCommentValue(config.mode)}`,
     "  =====",
     "  「やり残したことなど ない」",
@@ -76,6 +76,7 @@ function createBuildInfoComment(config: ResolvedConfig) {
     "  ——「勇気はどこに？君の胸に！」 / Aqours",
     "",
     "  これは ラブライブ！サンシャイン!! Aqours Finale LoveLive! ～永久stage～ の1周年を記念して捧げます。",
+    "  Aqoursの勇気が、あなたを前へと導いてくれますように。",
     "-->",
   ].join("\n");
 }
