@@ -61,7 +61,7 @@ function createBuildInfoComment(config: ResolvedConfig) {
   return [
     "<!--",
     "  Ayumu Live Player",
-    "  © 2020 - 2026 Ayumu Network",
+    `  © 2020 - ${new Date().getFullYear()} Ayumu Network`,
     "  Powered by Vite.js & ArtPlayer.js @ Evan You",
     "  =====",
     `  Version: ${sanitizeHtmlCommentValue(branch)} @ ${sanitizeHtmlCommentValue(commit)}`,
