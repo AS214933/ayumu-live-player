@@ -6,25 +6,6 @@ export default defineConfig({
   plugins: [buildInfoCommentPlugin()],
   build: {
     chunkSizeWarningLimit: 650,
-    minify: "terser",
-    terserOptions: {
-      ecma: 2020,
-      module: true,
-      keep_classnames: false,
-      keep_fnames: false,
-      compress: {
-        passes: 3,
-        toplevel: true,
-        drop_debugger: true,
-      },
-      mangle: {
-        toplevel: true,
-        safari10: true,
-      },
-      format: {
-        comments: false,
-      },
-    },
     rollupOptions: {
       output: {
         manualChunks(id) {
