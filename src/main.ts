@@ -138,6 +138,7 @@ let hevcFirstFrameWatchCleanup: (() => void) | null = null;
 let streamLoadTimeoutWatchCleanup: (() => void) | null = null;
 let streamStoppedByPause = false;
 let resumeAfterReload = false;
+let hasStartedPlayback = false;
 let isDestroyingStream = false;
 let isTransitioningStream = false;
 let warnedNativeHlsRequestConfig = false;
@@ -827,21 +828,55 @@ function installControlsAutoHide(player: Artplayer) {
     player.controls.show = false;
   };
 
+  const hasMousePointer = window.matchMedia?.("(hover: hover) and (pointer: fine)").matches ?? true;
+  let lastTouchTimestamp = Number.NEGATIVE_INFINITY;
+
+  const markTouchInteraction = () => {
+    lastTouchTimestamp = performance.now();
+  };
+
+  const isTouchGeneratedMouseEvent = () => performance.now() - lastTouchTimestamp < 1000;
+
+  const handlePlayerPointerLeave = (event: PointerEvent) => {
+    // 触摸/触控笔抬起时指针就会被销毁并触发 pointerleave，
+    // 此时用户并没有离开播放器，只有鼠标移出播放器才应该隐藏控制栏。
+    if (event.pointerType !== "mouse") {
+      return;
+    }
+
+    hideControls();
+  };
+
+  const handlePlayerMouseLeave = () => {
+    // 触摸设备会补发 mouseleave/mouseout 兼容事件，需要忽略它们。
+    if (isTouchGeneratedMouseEvent()) {
+      return;
+    }
+
+    hideControls();
+  };
+
   const handleDocumentMouseOut = (event: MouseEvent) => {
-    if (!event.relatedTarget) {
+    if (!event.relatedTarget && !isTouchGeneratedMouseEvent()) {
       hideControls();
     }
   };
 
-  player.template.$player.addEventListener("pointerleave", hideControls);
-  player.template.$player.addEventListener("mouseleave", hideControls);
-  document.addEventListener("mouseout", handleDocumentMouseOut);
+  player.template.$player.addEventListener("pointerleave", handlePlayerPointerLeave);
+  document.addEventListener("touchstart", markTouchInteraction, { capture: true, passive: true });
+
+  if (hasMousePointer) {
+    player.template.$player.addEventListener("mouseleave", handlePlayerMouseLeave);
+    document.addEventListener("mouseout", handleDocumentMouseOut);
+  }
+
   window.addEventListener("blur", hideControls);
   document.addEventListener("visibilitychange", hideControls);
 
   player.on("destroy", () => {
-    player.template.$player.removeEventListener("pointerleave", hideControls);
-    player.template.$player.removeEventListener("mouseleave", hideControls);
+    player.template.$player.removeEventListener("pointerleave", handlePlayerPointerLeave);
+    player.template.$player.removeEventListener("mouseleave", handlePlayerMouseLeave);
+    document.removeEventListener("touchstart", markTouchInteraction, { capture: true });
     document.removeEventListener("mouseout", handleDocumentMouseOut);
     window.removeEventListener("blur", hideControls);
     document.removeEventListener("visibilitychange", hideControls);
@@ -853,6 +888,10 @@ function installPauseFetchControl(player: Artplayer) {
     hidePauseFrame(player.video);
   };
 
+  const markPlaybackStarted = () => {
+    hasStartedPlayback = true;
+  };
+
   const stopFetchingOnPause = () => {
     if (
       !hasActiveStreamSource() ||
@@ -860,6 +899,12 @@ function installPauseFetchControl(player: Artplayer) {
       isTransitioningStream ||
       player.video.ended
     ) {
+      return;
+    }
+
+    // 播放器在真正播放前也可能收到 pause（例如流还在准备、源被重建时的内部暂停），
+    // 此时不应该用截帧顶替配置的 poster。
+    if (!hasStartedPlayback) {
       return;
     }
 
@@ -885,17 +930,23 @@ function installPauseFetchControl(player: Artplayer) {
   };
 
   player.on("video:pause", stopFetchingOnPause);
+  player.on("video:playing", markPlaybackStarted);
   player.on("play", restartFetchingOnPlay);
   player.on("video:play", restartFetchingOnPlay);
   player.video.addEventListener("loadeddata", hidePauseFrameOnPlayback);
   player.video.addEventListener("playing", hidePauseFrameOnPlayback);
 
   player.on("destroy", () => {
+    player.off("video:pause", stopFetchingOnPause);
+    player.off("video:playing", markPlaybackStarted);
+    player.off("play", restartFetchingOnPlay);
+    player.off("video:play", restartFetchingOnPlay);
     player.video.removeEventListener("loadeddata", hidePauseFrameOnPlayback);
     player.video.removeEventListener("playing", hidePauseFrameOnPlayback);
     hidePauseFrame(player.video);
     streamStoppedByPause = false;
     resumeAfterReload = false;
+    hasStartedPlayback = false;
   });
 }
 
@@ -1646,6 +1697,8 @@ function destroyStreamPlayer(video?: HTMLVideoElement) {
     nativeHlsVideo = null;
     activeStreamKind = null;
     activeStreamUrl = null;
+    // 旧源已被销毁，新源在真正播放前不应触发暂停截帧。
+    hasStartedPlayback = false;
 
     if (shouldResetVideo && resetTarget) {
       resetVideo(resetTarget);
