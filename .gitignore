@@ -149,3 +149,6 @@ public/assets/poster.*
 
 # Ignore personal playerConfig
 src/playerConfig.ts
+
+.pnpm-store/
+.agents/
