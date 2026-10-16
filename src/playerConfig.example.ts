@@ -83,8 +83,19 @@ export type ContextmenuAction =
 export type ContextmenuItemConfig = {
   // 菜单显示文本，支持 HTML 字符串
   html: string;
-  // 排序权重：内建项依次是 10(播放速度)、20(画面比例)、30(画面翻转)、40(统计信息)、50(版本)、60(关闭)，
-  // 自定义项用 index 插入到它们前面/中间/后面；index 相同时按配置数组顺序排列
+  // 排序权重，正序排列（index 越小越靠前，未配置时排在所有内建项之后）。
+  // 内建项固定 index：10(播放速度) < 20(画面比例) < 30(画面翻转) < 40(统计信息) < 50(版本) < 60(关闭)。
+  // 区间对照：
+  //   index < 10          → 排在所有内建项最前面
+  //   10 ~ 19.999...      → 播放速度 与 画面比例 之间
+  //   20 ~ 29.999...      → 画面比例 与 画面翻转 之间
+  //   30 ~ 39.999...      → 画面翻转 与 统计信息 之间
+  //   40 ~ 49.999...      → 统计信息 与 版本 之间
+  //   50 ~ 59.999...      → 版本 与 关闭 之间
+  //   index >= 60         → 排在"关闭"之后（最末尾）
+  // 支持小数精确插入（如 40.5 排在 40 与 50 的正中间）。
+  // 两个自定义项 index 相同时，内部会自动加 0.001 级别的微调，
+  // 按配置数组中的书写顺序正序排列（先写的在前）。
   index?: number;
   // 满足条件时隐藏该菜单项（同 complex.controls 的 hiddenWhen）
   hiddenWhen?: TemplateControlCondition | TemplateControlCondition[];
@@ -234,10 +245,12 @@ export const playerConfig: PlayerConfig = {
   autoorientation: true,
   screenshot: true,
   // 自定义右键菜单示例（不需要时删除或留空数组）
+  // 排序规则：index 正序（越小越靠前）；内建项固定为 10/20/30/40/50/60，
+  // 区间对照见上方 ContextmenuItemConfig.index 注释。
   contextmenu: [
     {
       html: "官方网站",
-      index: 5, // 排在内建菜单项之前
+      index: 5, // 5 < 10 → 排在所有内建项最前面
       action: {
         type: "link",
         url: "https://example.com",
@@ -246,7 +259,7 @@ export const playerConfig: PlayerConfig = {
     },
     {
       html: "直播间信息",
-      index: 45, // 排在"统计信息"和"版本"之间
+      index: 45, // 40 ≤ 45 < 50 → 排在"统计信息"与"版本"之间
       action: {
         type: "dialog",
         title: "直播间信息",
@@ -256,7 +269,7 @@ export const playerConfig: PlayerConfig = {
     },
     {
       html: "关注主播",
-      index: 70, // 排在"关闭"之后
+      index: 70, // 70 ≥ 60 → 排在"关闭"之后（最末尾）
       action: {
         type: "dialog",
         html: "<p>扫码或点击链接关注主播。</p>",
