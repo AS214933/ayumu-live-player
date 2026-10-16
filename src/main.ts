@@ -991,7 +991,9 @@ function installCustomContextmenu(player: Artplayer) {
       mounted(element: HTMLElement) {
         record.element = element;
       },
-      click(_menu: unknown, event: Event) {
+      click(menu: unknown, event: Event) {
+        // 点击后（无论打开链接还是弹窗）都应像内建菜单项一样收起右键菜单。
+        (menu as { show?: boolean }).show = false;
         runCustomContextmenuAction(dialog, config, event);
       },
     } as Parameters<Artplayer["contextmenu"]["add"]>[0]);
