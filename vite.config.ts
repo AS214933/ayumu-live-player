@@ -4,6 +4,10 @@ import { defineConfig, type Plugin, type ResolvedConfig } from "vite";
 export default defineConfig({
   base: normalizeBase(process.env.VITE_BASE_PATH ?? "./"),
   plugins: [buildInfoCommentPlugin()],
+  define: {
+    // 构建时的当前提交完整哈希，供 playerConfig.contextmenu 里的 {commit}/{commit8} 占位符使用
+    __AYUMU_COMMIT__: JSON.stringify(readGitValue("git rev-parse HEAD") ?? "unknown"),
+  },
   build: {
     chunkSizeWarningLimit: 650,
     rollupOptions: {

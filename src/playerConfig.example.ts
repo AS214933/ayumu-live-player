@@ -81,7 +81,7 @@ export type ContextmenuAction =
     };
 
 export type ContextmenuItemConfig = {
-  // 菜单显示文本，支持 HTML 字符串
+  // 菜单显示文本，支持 HTML 字符串；占位符 {commit} 替换为完整提交哈希，{commit8} 替换为 8 位缩写
   html: string;
   // 排序权重，正序排列（index 越小越靠前，未配置时排在所有内建项之后）。
   // 内建项固定 index：10(播放速度) < 20(画面比例) < 30(画面翻转) < 40(统计信息) < 50(版本) < 60(关闭)。
@@ -268,13 +268,12 @@ export const playerConfig: PlayerConfig = {
       },
     },
     {
-      html: "关注主播",
-      index: 70, // 70 ≥ 60 → 排在"关闭"之后（最末尾）
+      html: "Ayumu Live Player @ {commit8}",
+      index: 51, // 50 ≤ 51 < 60 → 排在"版本"与"关闭"之间
       action: {
-        type: "dialog",
-        html: "<p>扫码或点击链接关注主播。</p>",
-        position: "bottom-right",
-        width: 320,
+        type: "link",
+        url: "https://example.com",
+        target: "_blank",
       },
     },
   ],

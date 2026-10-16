@@ -986,7 +986,7 @@ function installCustomContextmenu(player: Artplayer) {
     player.contextmenu.add({
       name: itemName,
       index: (config.index ?? 0) + order / 1000,
-      html: config.html,
+      html: interpolateContextmenuHtml(config.html),
       style: isCustomContextmenuItemVisible(config) ? undefined : { display: "none" },
       mounted(element: HTMLElement) {
         record.element = element;
@@ -1026,6 +1026,14 @@ function isCustomContextmenuItemVisible(config: ContextmenuItemConfig) {
   }
 
   return !matchesTemplateControlCondition(config.hiddenWhen, selectedTemplateValues);
+}
+
+// 替换右键菜单 html 里的占位符：{commit} → 完整提交哈希；{commit8} → 8 位缩写
+function interpolateContextmenuHtml(html: string) {
+  const commit = typeof __AYUMU_COMMIT__ === "string" ? __AYUMU_COMMIT__ : "unknown";
+  return html.replace(/\{commit8\}|\{commit\}/g, (placeholder) =>
+    placeholder === "{commit8}" ? commit.slice(0, 8) : commit,
+  );
 }
 
 type CustomContextmenuDialog = {
