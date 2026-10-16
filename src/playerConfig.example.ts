@@ -60,6 +60,37 @@ export type ComplexPlayerConfig = {
   codecs?: Partial<Record<StreamFormat, StreamQuality["codec"]>>;
 };
 
+export type ContextmenuAction =
+  | {
+      // 点击后在新标签页打开链接
+      type: "link";
+      url: string;
+      target?: "_blank" | "_self" | "_parent" | "_top";
+    }
+  | {
+      // 点击后在播放器内弹出浮层（样式同"统计信息"面板）
+      type: "dialog";
+      // 浮层标题
+      title?: string;
+      // 浮层内容，支持 HTML 字符串
+      html: string;
+      // 浮层出现的位置：四角或居中，默认居中
+      position?: "top-left" | "top-right" | "bottom-left" | "bottom-right" | "center";
+      // 浮层宽度（px），默认随内容、上限 560px
+      width?: number;
+    };
+
+export type ContextmenuItemConfig = {
+  // 菜单显示文本，支持 HTML 字符串
+  html: string;
+  // 排序权重：内建项依次是 10(播放速度)、20(画面比例)、30(画面翻转)、40(统计信息)、50(版本)、60(关闭)，
+  // 自定义项用 index 插入到它们前面/中间/后面；index 相同时按配置数组顺序排列
+  index?: number;
+  // 满足条件时隐藏该菜单项（同 complex.controls 的 hiddenWhen）
+  hiddenWhen?: TemplateControlCondition | TemplateControlCondition[];
+  action?: ContextmenuAction;
+};
+
 export type PlayerConfig = {
   title: string;
   StreamName: string;
@@ -70,6 +101,8 @@ export type PlayerConfig = {
   request?: RequestHeaderConfig;
   qualities: StreamQuality[];
   complex?: ComplexPlayerConfig;
+  // 自定义右键菜单，追加到内建菜单项中
+  contextmenu?: ContextmenuItemConfig[];
   autoplay: boolean;
   autoorientation: boolean;
   screenshot: boolean;
@@ -200,6 +233,38 @@ export const playerConfig: PlayerConfig = {
   autoplay: true,
   autoorientation: true,
   screenshot: true,
+  // 自定义右键菜单示例（不需要时删除或留空数组）
+  contextmenu: [
+    {
+      html: "官方网站",
+      index: 5, // 排在内建菜单项之前
+      action: {
+        type: "link",
+        url: "https://example.com",
+        target: "_blank",
+      },
+    },
+    {
+      html: "直播间信息",
+      index: 45, // 排在"统计信息"和"版本"之间
+      action: {
+        type: "dialog",
+        title: "直播间信息",
+        html: "<p>这里可以填写直播间的介绍、主播信息等内容，支持 HTML。</p>",
+        position: "center",
+      },
+    },
+    {
+      html: "关注主播",
+      index: 70, // 排在"关闭"之后
+      action: {
+        type: "dialog",
+        html: "<p>扫码或点击链接关注主播。</p>",
+        position: "bottom-right",
+        width: 320,
+      },
+    },
+  ],
 };
 
 export const analyticsConfig: AnalyticsConfig = {

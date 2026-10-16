@@ -4,6 +4,7 @@ import mpegts from "mpegts.js";
 import { initAnalytics, trackClarityEvent } from "./analytics";
 import {
   playerConfig,
+  type ContextmenuItemConfig,
   type RequestHeaderConfig,
   type StreamFormat,
   type StreamQuality,
@@ -141,6 +142,7 @@ let resumeAfterReload = false;
 let hasStartedPlayback = false;
 let isDestroyingStream = false;
 let isTransitioningStream = false;
+let customContextmenuRecords: CustomContextmenuItemRecord[] | null = null;
 let warnedNativeHlsRequestConfig = false;
 let warnedFetchReferrerFallback = false;
 const warnedForbiddenRequestHeaders = new Set<string>();
@@ -196,6 +198,7 @@ applyConfiguredVideoPoster(art.video);
 installControlsAutoHide(art);
 installPauseFetchControl(art);
 removeLiveProgressContainer(art);
+installCustomContextmenu(art);
 refreshTemplateControlsVisibility();
 
 pauseFrameOverlay = createPauseFrameOverlay(app);
@@ -685,6 +688,8 @@ function refreshTemplateControlsVisibility() {
     updateTemplateControlVisibility(control);
     updateTemplateSettingVisibility(control);
   }
+
+  updateCustomContextmenuVisibility();
 }
 
 function refreshTemplateOptionSelection(name: string) {
@@ -956,6 +961,193 @@ function removeLiveProgressContainer(player: Artplayer) {
   }
 
   player.template.$progress.remove();
+}
+
+type CustomContextmenuItemRecord = {
+  config: ContextmenuItemConfig;
+  order: number;
+  element?: HTMLElement;
+};
+
+function installCustomContextmenu(player: Artplayer) {
+  const configs = playerConfig.contextmenu ?? [];
+
+  if (configs.length === 0) {
+    return;
+  }
+
+  const dialog = createCustomContextmenuDialog(player);
+  const records: CustomContextmenuItemRecord[] = configs.map((config, order) => ({ config, order }));
+  customContextmenuRecords = records;
+
+  for (const record of records) {
+    const { config, order } = record;
+    const itemName = `ayumu-custom-${order}`;
+    player.contextmenu.add({
+      name: itemName,
+      index: (config.index ?? 0) + order / 1000,
+      html: config.html,
+      style: isCustomContextmenuItemVisible(config) ? undefined : { display: "none" },
+      mounted(element: HTMLElement) {
+        record.element = element;
+      },
+      click(_menu: unknown, event: Event) {
+        runCustomContextmenuAction(dialog, config, event);
+      },
+    } as Parameters<Artplayer["contextmenu"]["add"]>[0]);
+  }
+
+  player.on("destroy", () => {
+    for (const record of customContextmenuRecords ?? []) {
+      record.element = undefined;
+    }
+  });
+}
+
+function updateCustomContextmenuVisibility() {
+  if (!customContextmenuRecords) {
+    return;
+  }
+
+  for (const record of customContextmenuRecords) {
+    if (!record.element) {
+      continue;
+    }
+
+    record.element.style.display = isCustomContextmenuItemVisible(record.config) ? "" : "none";
+  }
+}
+
+function isCustomContextmenuItemVisible(config: ContextmenuItemConfig) {
+  if (!config.hiddenWhen || !selectedTemplateValues) {
+    return true;
+  }
+
+  return !matchesTemplateControlCondition(config.hiddenWhen, selectedTemplateValues);
+}
+
+type CustomContextmenuDialog = {
+  root: HTMLDivElement;
+  title: HTMLDivElement;
+  content: HTMLDivElement;
+};
+
+function createCustomContextmenuDialog(player: Artplayer): CustomContextmenuDialog {
+  const root = document.createElement("div");
+  const panel = document.createElement("div");
+  const title = document.createElement("div");
+  const content = document.createElement("div");
+  const closeButton = document.createElement("button");
+
+  root.className = "player-contextmenu-dialog";
+  root.hidden = true;
+  panel.className = "player-contextmenu-dialog-panel";
+  title.className = "player-contextmenu-dialog-title";
+  content.className = "player-contextmenu-dialog-content";
+  closeButton.className = "player-contextmenu-dialog-close";
+  closeButton.type = "button";
+  closeButton.setAttribute("aria-label", "关闭");
+  closeButton.textContent = "×";
+
+  panel.append(title, content, closeButton);
+  root.appendChild(panel);
+  player.template.$player.appendChild(root);
+
+  const hideDialog = () => {
+    root.hidden = true;
+  };
+
+  closeButton.addEventListener("click", hideDialog);
+
+  const handleDocumentClick = (event: MouseEvent) => {
+    if (root.hidden) {
+      return;
+    }
+
+    const target = event.target;
+
+    if (target instanceof Node && !root.contains(target)) {
+      hideDialog();
+    }
+  };
+
+  document.addEventListener("click", handleDocumentClick);
+
+  player.on("destroy", () => {
+    document.removeEventListener("click", handleDocumentClick);
+    root.remove();
+  });
+
+  return { root, title, content };
+}
+
+function showCustomContextmenuDialog(
+  dialog: CustomContextmenuDialog,
+  options: { title?: string; html: string; position?: string; width?: number },
+) {
+  const positions = ["top-left", "top-right", "bottom-left", "bottom-right", "center"];
+
+  dialog.title.textContent = options.title ?? "";
+  dialog.title.hidden = !options.title;
+  dialog.content.innerHTML = options.html;
+
+  for (const position of positions) {
+    dialog.root.classList.remove(`player-contextmenu-dialog-${position}`);
+  }
+
+  dialog.root.classList.add(
+    `player-contextmenu-dialog-${positions.includes(options.position ?? "") ? options.position : "center"}`,
+  );
+  dialog.root.style.setProperty(
+    "--player-contextmenu-dialog-width",
+    typeof options.width === "number" && options.width > 0 ? `${Math.round(options.width)}px` : "",
+  );
+  dialog.root.hidden = false;
+}
+
+function runCustomContextmenuAction(
+  dialog: CustomContextmenuDialog,
+  config: ContextmenuItemConfig,
+  event: Event,
+) {
+  const action = config.action;
+
+  if (!action) {
+    return;
+  }
+
+  if (action.type === "link") {
+    const url = action.url.trim();
+
+    if (!url) {
+      return;
+    }
+
+    if (action.target && action.target !== "_blank") {
+      window.open(url, action.target);
+      return;
+    }
+
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  showCustomContextmenuDialog(dialog, {
+    title: action.title,
+    html: action.html,
+    position: action.position,
+    width: action.width,
+  });
+  trackClarityEvent("contextmenu_dialog_opened");
 }
 
 function getQualityByUrl(url: string): StreamQuality {
