@@ -73,6 +73,8 @@ type StreamRequestTimeouts = {
 };
 
 const HEVC_FIRST_FRAME_TIMEOUT_MS = 10_000;
+// 底部控制栏刷新按钮图标（与 ArtPlayer 内建图标同为 22px）
+const REFRESH_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"></path></svg>`;
 const HEVC_MIME_TYPES = [
   'video/mp4; codecs="hvc1.1.6.L93.B0"',
   'video/mp4; codecs="hev1.1.6.L93.B0"',
@@ -127,19 +129,14 @@ const templateSettingOptions = createTemplateSettingOptions(templateSource);
 const hasTemplateSettingControls = hasTemplateSettingControlsEnabled(templateSource);
 const defaultQuality = getDefaultQuality(streamQualities);
 let errorOverlay: HTMLDivElement | null = null;
-let pauseFrameOverlay: HTMLDivElement | null = null;
 let pendingErrorMessage: string | null = null;
 let flvPlayer: mpegts.Player | null = null;
 let hlsPlayer: Hls | null = null;
 let nativeHlsVideo: HTMLVideoElement | null = null;
-let activeStreamKind: "flv" | "m3u8" | "native-hls" | null = null;
 let activeStreamUrl: string | null = null;
 let currentQuality: StreamQuality = defaultQuality;
 let hevcFirstFrameWatchCleanup: (() => void) | null = null;
 let streamLoadTimeoutWatchCleanup: (() => void) | null = null;
-let streamStoppedByPause = false;
-let resumeAfterReload = false;
-let hasStartedPlayback = false;
 let isDestroyingStream = false;
 let isTransitioningStream = false;
 let customContextmenuRecords: CustomContextmenuItemRecord[] | null = null;
@@ -196,12 +193,11 @@ const art = new Artplayer({
 
 applyConfiguredVideoPoster(art.video);
 installControlsAutoHide(art);
-installPauseFetchControl(art);
 removeLiveProgressContainer(art);
+installRefreshControl(art);
 installCustomContextmenu(art);
 refreshTemplateControlsVisibility();
 
-pauseFrameOverlay = createPauseFrameOverlay(app);
 errorOverlay = createErrorOverlay(app);
 
 if (pendingErrorMessage) {
@@ -648,16 +644,6 @@ function selectTemplateVariable(name: string, value: TemplateValue) {
   currentQuality = nextQuality;
   trackClarityEvent("template_variable_changed");
 
-  if (art.video.paused || streamStoppedByPause) {
-    if (hasActiveStreamSource() && !streamStoppedByPause) {
-      stopStreamFetching();
-    }
-
-    streamStoppedByPause = true;
-    art.notice.show = nextQuality.name;
-    return;
-  }
-
   isTransitioningStream = true;
 
   void art
@@ -888,71 +874,43 @@ function installControlsAutoHide(player: Artplayer) {
   });
 }
 
-function installPauseFetchControl(player: Artplayer) {
-  const hidePauseFrameOnPlayback = () => {
-    hidePauseFrame(player.video);
-  };
+function installRefreshControl(player: Artplayer) {
+  player.controls.add({
+    name: "refresh",
+    position: "left",
+    index: 30,
+    html: REFRESH_ICON,
+    tooltip: "刷新",
+    click() {
+      refreshPlayback(player);
+    },
+  } as Parameters<Artplayer["controls"]["add"]>[0]);
+}
 
-  const markPlaybackStarted = () => {
-    hasStartedPlayback = true;
-  };
+function refreshPlayback(player: Artplayer) {
+  if (isDestroyingStream || isTransitioningStream) {
+    return;
+  }
 
-  const stopFetchingOnPause = () => {
-    if (
-      !hasActiveStreamSource() ||
-      isDestroyingStream ||
-      isTransitioningStream ||
-      player.video.ended
-    ) {
-      return;
-    }
+  const shouldResume = !player.video.paused;
 
-    // 播放器在真正播放前也可能收到 pause（例如流还在准备、源被重建时的内部暂停），
-    // 此时不应该用截帧顶替配置的 poster。
-    if (!hasStartedPlayback) {
-      return;
-    }
+  trackClarityEvent("stream_source_refreshed");
+  hidePlayerError();
+  player.notice.show = "已刷新";
 
-    showPauseFrame(player.video);
-    stopStreamFetching();
-  };
+  isTransitioningStream = true;
 
-  const restartFetchingOnPlay = () => {
-    if (!streamStoppedByPause || resumeAfterReload) {
-      return;
-    }
+  try {
+    loadStreamSource(player.video, currentQuality);
+  } finally {
+    isTransitioningStream = false;
+  }
 
-    resumeAfterReload = true;
-
-    try {
-      restartStreamFetching(player.video);
-    } catch (error) {
-      streamStoppedByPause = true;
-      console.warn("Failed to restart stream fetching:", error);
-    } finally {
-      resumeAfterReload = false;
-    }
-  };
-
-  player.on("video:pause", stopFetchingOnPause);
-  player.on("video:playing", markPlaybackStarted);
-  player.on("play", restartFetchingOnPlay);
-  player.on("video:play", restartFetchingOnPlay);
-  player.video.addEventListener("loadeddata", hidePauseFrameOnPlayback);
-  player.video.addEventListener("playing", hidePauseFrameOnPlayback);
-
-  player.on("destroy", () => {
-    player.off("video:pause", stopFetchingOnPause);
-    player.off("video:playing", markPlaybackStarted);
-    player.off("play", restartFetchingOnPlay);
-    player.off("video:play", restartFetchingOnPlay);
-    player.video.removeEventListener("loadeddata", hidePauseFrameOnPlayback);
-    player.video.removeEventListener("playing", hidePauseFrameOnPlayback);
-    hidePauseFrame(player.video);
-    streamStoppedByPause = false;
-    resumeAfterReload = false;
-    hasStartedPlayback = false;
-  });
+  if (shouldResume) {
+    player.video.play().catch((error) => {
+      console.warn("Failed to resume playback after refresh:", error);
+    });
+  }
 }
 
 function removeLiveProgressContainer(player: Artplayer) {
@@ -1200,69 +1158,12 @@ function hasActiveStreamSource() {
   return Boolean(flvPlayer || hlsPlayer || nativeHlsVideo);
 }
 
-function stopStreamFetching() {
-  streamStoppedByPause = true;
-  isTransitioningStream = true;
-  clearStreamLoadTimeoutWatch();
-
-  try {
-    if (activeStreamKind === "flv" && flvPlayer) {
-      flvPlayer.unload();
-      return;
-    }
-
-    if (activeStreamKind === "m3u8" && hlsPlayer) {
-      hlsPlayer.stopLoad();
-      return;
-    }
-  } finally {
-    isTransitioningStream = false;
-  }
-}
-
-function restartStreamFetching(video: HTMLVideoElement) {
-  isTransitioningStream = true;
-
-  try {
-    if (activeStreamUrl !== currentQuality.url) {
-      loadStreamSource(video, currentQuality);
-      streamStoppedByPause = false;
-      return;
-    }
-
-    if (activeStreamKind === "flv" && flvPlayer) {
-      streamStoppedByPause = false;
-      startStreamLoadTimeoutWatch(video, currentQuality);
-      flvPlayer.load();
-      return;
-    }
-
-    if (activeStreamKind === "m3u8" && hlsPlayer) {
-      streamStoppedByPause = false;
-      startStreamLoadTimeoutWatch(video, currentQuality);
-      hlsPlayer.startLoad();
-      return;
-    }
-
-    if (activeStreamKind === "native-hls" && nativeHlsVideo === video) {
-      streamStoppedByPause = false;
-      return;
-    }
-
-    loadStreamSource(video, currentQuality);
-    streamStoppedByPause = false;
-  } finally {
-    isTransitioningStream = false;
-  }
-}
-
 function loadStreamSource(video: HTMLVideoElement, quality: StreamQuality) {
   const format = getStreamFormat(quality);
 
   if (!format) {
     trackClarityEvent("stream_source_load_failed");
     showPlayerError('无法识别播放源格式，请在配置里把 format 设成 "flv" 或 "m3u8"。');
-    resumeAfterReload = false;
     return;
   }
 
@@ -1282,7 +1183,6 @@ function loadStreamSource(video: HTMLVideoElement, quality: StreamQuality) {
       destroyStreamPlayer(video);
       hidePlayerError();
       showPlayerError(unsupportedHevcMessage);
-      resumeAfterReload = false;
     } finally {
       isTransitioningStream = false;
     }
@@ -1427,12 +1327,7 @@ function startHevcFirstFrameWatch(video: HTMLVideoElement, quality: StreamQualit
   };
 
   const timeoutId = window.setTimeout(() => {
-    if (
-      currentQuality.url !== sourceUrl ||
-      activeStreamUrl !== sourceUrl ||
-      streamStoppedByPause ||
-      video.paused
-    ) {
+    if (currentQuality.url !== sourceUrl || activeStreamUrl !== sourceUrl || video.paused) {
       clearHevcFirstFrameWatch();
       return;
     }
@@ -1478,12 +1373,7 @@ function startStreamLoadTimeoutWatch(video: HTMLVideoElement, quality: StreamQua
     }
   };
   const timeoutId = window.setTimeout(() => {
-    if (
-      currentQuality.url !== sourceUrl ||
-      activeStreamUrl !== sourceUrl ||
-      streamStoppedByPause ||
-      isDestroyingStream
-    ) {
+    if (currentQuality.url !== sourceUrl || activeStreamUrl !== sourceUrl || isDestroyingStream) {
       clearStreamLoadTimeoutWatch();
       return;
     }
@@ -1495,7 +1385,6 @@ function startStreamLoadTimeoutWatch(video: HTMLVideoElement, quality: StreamQua
 
     trackClarityEvent("stream_source_load_failed");
     showPlayerError(`拉取 ${quality.name} 超时，请检查源站响应或调大 request.timeoutMs。`);
-    resumeAfterReload = false;
     destroyStreamPlayer(video);
   }, timeoutMs);
   const events: Array<[string, EventListener]> = [
@@ -1547,7 +1436,6 @@ function handleHevcPlaybackFailure(
   }
 
   showPlayerError(`${reason} 请切换 AVC 或换用支持 HEVC/H.265 的浏览器。`);
-  resumeAfterReload = false;
 }
 
 function getVideoFrameSnapshot(video: HTMLVideoElement): VideoFrameSnapshot {
@@ -1622,9 +1510,7 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
   if (!features.mseLivePlayback || !mpegts.isSupported()) {
     trackClarityEvent("flv_source_load_failed");
     showPlayerError("当前浏览器不支持 FLV/MSE 播放，请更换支持 Media Source Extensions 的浏览器。");
-    activeStreamKind = null;
     activeStreamUrl = null;
-    resumeAfterReload = false;
     return;
   }
 
@@ -1638,9 +1524,7 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
     }
 
     showPlayerError(message);
-    activeStreamKind = null;
     activeStreamUrl = null;
-    resumeAfterReload = false;
     return;
   }
 
@@ -1677,18 +1561,14 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
     });
 
     flvPlayer.attachMediaElement(video);
-    activeStreamKind = "flv";
     activeStreamUrl = quality.url;
-    streamStoppedByPause = false;
     startStreamLoadTimeoutWatch(video, quality);
     flvPlayer.load();
     startHevcFirstFrameWatch(video, quality);
   } catch (error) {
     trackClarityEvent("flv_source_load_failed");
     showPlayerError(`FLV 加载失败：${error instanceof Error ? error.message : String(error)}`);
-    activeStreamKind = null;
     activeStreamUrl = null;
-    resumeAfterReload = false;
     destroyStreamPlayer(video);
   }
 }
@@ -1699,9 +1579,7 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
   if (shouldUseNativeHls(video)) {
     applyNativeVideoRequestConfig(video);
     nativeHlsVideo = video;
-    activeStreamKind = "native-hls";
     activeStreamUrl = quality.url;
-    streamStoppedByPause = false;
     startStreamLoadTimeoutWatch(video, quality);
     video.src = quality.url;
     video.load();
@@ -1712,9 +1590,7 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
   if (!Hls.isSupported()) {
     trackClarityEvent("m3u8_source_load_failed");
     showPlayerError("当前浏览器不支持 HLS/M3U8 播放，请更换支持 Media Source Extensions 或原生 HLS 的浏览器。");
-    activeStreamKind = null;
     activeStreamUrl = null;
-    resumeAfterReload = false;
     return;
   }
 
@@ -1747,15 +1623,11 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
         }
 
         showPlayerError(`M3U8 加载失败：${detail}`);
-        activeStreamKind = null;
-        resumeAfterReload = false;
         destroyStreamPlayer(video);
       }
     });
 
-    activeStreamKind = "m3u8";
     activeStreamUrl = quality.url;
-    streamStoppedByPause = false;
     startStreamLoadTimeoutWatch(video, quality);
     hlsPlayer.loadSource(quality.url);
     hlsPlayer.attachMedia(video);
@@ -1770,9 +1642,7 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
     }
 
     showPlayerError(`M3U8 加载失败：${detail}`);
-    activeStreamKind = null;
     activeStreamUrl = null;
-    resumeAfterReload = false;
     destroyStreamPlayer(video);
   }
 }
@@ -1785,81 +1655,6 @@ function resetVideo(video: HTMLVideoElement) {
     video.load();
   } catch (error) {
     console.error("Video reset failed:", error);
-  }
-}
-
-function createPauseFrameOverlay(container: HTMLElement): HTMLDivElement {
-  const overlay = document.createElement("div");
-  const image = document.createElement("img");
-
-  overlay.className = "player-pause-frame";
-  overlay.hidden = true;
-  image.alt = "";
-  image.decoding = "async";
-
-  overlay.appendChild(image);
-  container.appendChild(overlay);
-  return overlay;
-}
-
-function showPauseFrame(video: HTMLVideoElement): boolean {
-  const frameUrl = captureVideoFrame(video);
-
-  if (!pauseFrameOverlay || !frameUrl) {
-    return false;
-  }
-
-  const image = pauseFrameOverlay.querySelector<HTMLImageElement>("img");
-
-  if (!image) {
-    return false;
-  }
-
-  image.src = frameUrl;
-  pauseFrameOverlay.hidden = false;
-  video.poster = frameUrl;
-  return true;
-}
-
-function hidePauseFrame(video: HTMLVideoElement) {
-  if (pauseFrameOverlay) {
-    const image = pauseFrameOverlay.querySelector<HTMLImageElement>("img");
-
-    pauseFrameOverlay.hidden = true;
-    image?.removeAttribute("src");
-  }
-
-  applyConfiguredVideoPoster(video);
-}
-
-function captureVideoFrame(video: HTMLVideoElement): string | null {
-  if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
-    return null;
-  }
-
-  const maxFramePixels = 1920 * 1080;
-  const sourcePixels = video.videoWidth * video.videoHeight;
-  const scale = Math.min(1, Math.sqrt(maxFramePixels / sourcePixels));
-  const width = Math.max(1, Math.round(video.videoWidth * scale));
-  const height = Math.max(1, Math.round(video.videoHeight * scale));
-  const canvas = document.createElement("canvas");
-  const context = canvas.getContext("2d");
-
-  if (!context) {
-    return null;
-  }
-
-  canvas.width = width;
-  canvas.height = height;
-  context.fillStyle = "#000";
-  context.fillRect(0, 0, width, height);
-
-  try {
-    context.drawImage(video, 0, 0, width, height);
-    return canvas.toDataURL("image/jpeg", 0.9);
-  } catch (error) {
-    console.warn("Failed to capture pause frame:", error);
-    return null;
   }
 }
 
@@ -1897,10 +1692,8 @@ function destroyStreamPlayer(video?: HTMLVideoElement) {
     }
 
     nativeHlsVideo = null;
-    activeStreamKind = null;
     activeStreamUrl = null;
     // 旧源已被销毁，新源在真正播放前不应触发暂停截帧。
-    hasStartedPlayback = false;
 
     if (shouldResetVideo && resetTarget) {
       resetVideo(resetTarget);
