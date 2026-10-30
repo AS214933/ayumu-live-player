@@ -940,6 +940,12 @@ function installCustomContextmenu(player: Artplayer) {
 
   for (const record of records) {
     const { config, order } = record;
+
+    // enabled: false 的菜单项完全不注册，不出现在右键菜单里。
+    if (!isCustomContextmenuItemEnabled(config)) {
+      continue;
+    }
+
     const itemName = `ayumu-custom-${order}`;
     player.contextmenu.add({
       name: itemName,
@@ -978,7 +984,15 @@ function updateCustomContextmenuVisibility() {
   }
 }
 
+function isCustomContextmenuItemEnabled(config: ContextmenuItemConfig) {
+  return config.enabled !== false;
+}
+
 function isCustomContextmenuItemVisible(config: ContextmenuItemConfig) {
+  if (!isCustomContextmenuItemEnabled(config)) {
+    return false;
+  }
+
   if (!config.hiddenWhen || !selectedTemplateValues) {
     return true;
   }
