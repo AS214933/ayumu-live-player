@@ -171,6 +171,20 @@ body {
   flex: 0 0 auto;
 }
 
+/* 通过底部控制栏开关隐藏模板控件前的标签 */
+.art-video-player.player-label-hidden .player-template-control-label {
+  display: none;
+}
+
+/* 「隐藏标签」开关处于开启状态时高亮图标 */
+.art-video-player .art-control.art-control-is-active {
+  opacity: 1;
+}
+
+.art-video-player .art-control.art-control-is-active svg {
+  fill: var(--art-theme);
+}
+
 .player-template-control-value {
   min-width: 0;
   overflow: hidden;
