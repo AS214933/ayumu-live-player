@@ -104,6 +104,22 @@ export type ContextmenuItemConfig = {
   action?: ContextmenuAction;
 };
 
+// ArtPlayer 自带右键菜单项的显示开关，默认全部显示；设为 false 即隐藏该项。
+export type ContextmenuBuiltinsConfig = {
+  // 播放速度（需同时开启 option.playbackRate 才会出现）
+  playbackRate?: boolean;
+  // 画面比例（需同时开启 option.aspectRatio 才会出现）
+  aspectRatio?: boolean;
+  // 视频翻转（需同时开启 option.flip 才会出现）
+  flip?: boolean;
+  // 统计信息
+  info?: boolean;
+  // ArtPlayer 版本号（关闭后也不会有外链）
+  version?: boolean;
+  // 关闭
+  close?: boolean;
+};
+
 export type PlayerConfig = {
   title: string;
   StreamName: string;
@@ -116,6 +132,10 @@ export type PlayerConfig = {
   complex?: ComplexPlayerConfig;
   // 自定义右键菜单，追加到内建菜单项中
   contextmenu?: ContextmenuItemConfig[];
+  // ArtPlayer 自带右键菜单项的隐藏开关
+  contextmenuBuiltins?: ContextmenuBuiltinsConfig;
+  // 隐藏底部控制栏里各控件前的标签（如「线路」），只保留值
+  hideControlLabel?: boolean;
   autoplay: boolean;
   autoorientation: boolean;
   screenshot: boolean;
@@ -246,6 +266,17 @@ export const playerConfig: PlayerConfig = {
   autoplay: true,
   autoorientation: true,
   screenshot: true,
+  // ArtPlayer 自带右键菜单项开关：设为 false 即隐藏对应选项（默认全部显示）
+  contextmenuBuiltins: {
+    playbackRate: true, // 播放速度
+    aspectRatio: true, // 画面比例
+    flip: true, // 视频翻转
+    info: true, // 统计信息
+    version: true, // ArtPlayer 版本号（已去掉 ?ref= 追踪参数）
+    close: true, // 关闭
+  },
+  // 隐藏底部控制栏里各控件前的标签（如「线路」），只保留值
+  hideControlLabel: false,
   // 自定义右键菜单示例（不需要时删除或留空数组）
   // 排序规则：index 正序（越小越靠前）；内建项固定为 10/20/30/40/50/60，
   // 区间对照见上方 ContextmenuItemConfig.index 注释。

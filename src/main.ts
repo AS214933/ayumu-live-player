@@ -74,11 +74,17 @@ type StreamRequestTimeouts = {
 
 const HEVC_FIRST_FRAME_TIMEOUT_MS = 10_000;
 const ARTPLAYER_HOMEPAGE_URL = "https://artplayer.org";
-const CONTROL_LABEL_HIDDEN_STORAGE_KEY = "hideControlLabel";
+const BUILTIN_CONTEXTMENU_ITEMS = [
+  "playbackRate",
+  "aspectRatio",
+  "flip",
+  "info",
+  "version",
+  "close",
+] as const;
+
 // 底部控制栏刷新按钮图标（与 ArtPlayer 内建图标同为 22px）
 const REFRESH_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"><path d="M17.65 6.35A7.96 7.96 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"></path></svg>`;
-// 底部控制栏「隐藏标签」开关图标
-const LABEL_TOGGLE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"><path d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"></path></svg>`;
 const HEVC_MIME_TYPES = [
   'video/mp4; codecs="hvc1.1.6.L93.B0"',
   'video/mp4; codecs="hev1.1.6.L93.B0"',
@@ -199,8 +205,8 @@ applyConfiguredVideoPoster(art.video);
 installControlsAutoHide(art);
 removeLiveProgressContainer(art);
 installRefreshControl(art);
-installLabelToggleControl(art);
-installArtplayerVersionLink(art);
+installControlLabelVisibility(art);
+installContextmenuBuiltins(art);
 installCustomContextmenu(art);
 refreshTemplateControlsVisibility();
 
@@ -893,40 +899,30 @@ function installRefreshControl(player: Artplayer) {
   } as Parameters<Artplayer["controls"]["add"]>[0]);
 }
 
-function installLabelToggleControl(player: Artplayer) {
-  let hidden = player.storage.get(CONTROL_LABEL_HIDDEN_STORAGE_KEY) === true;
-  let controlElement: HTMLElement | null = null;
-
-  const applyState = () => {
-    player.template.$player.classList.toggle("player-label-hidden", hidden);
-
-    if (!controlElement) {
-      return;
-    }
-
-    controlElement.classList.toggle("art-control-is-active", hidden);
-    controlElement.setAttribute("aria-label", hidden ? "显示标签" : "隐藏标签");
-  };
-
-  player.controls.add({
-    name: "label-toggle",
-    position: "right",
-    index: 25,
-    html: LABEL_TOGGLE_ICON,
-    tooltip: "隐藏标签",
-    mounted(element: HTMLElement) {
-      controlElement = element;
-      applyState();
-    },
-    click() {
-      hidden = !hidden;
-      player.storage.set(CONTROL_LABEL_HIDDEN_STORAGE_KEY, hidden);
-      applyState();
-    },
-  } as Parameters<Artplayer["controls"]["add"]>[0]);
+function installControlLabelVisibility(player: Artplayer) {
+  // playerConfig.hideControlLabel 为 true 时隐藏控制栏里各控件前的标签，只保留值。
+  player.template.$player.classList.toggle("player-label-hidden", playerConfig.hideControlLabel === true);
 }
 
-function installArtplayerVersionLink(player: Artplayer) {
+function installContextmenuBuiltins(player: Artplayer) {
+  const switches = playerConfig.contextmenuBuiltins ?? {};
+
+  for (const name of BUILTIN_CONTEXTMENU_ITEMS) {
+    if (switches[name] !== false) {
+      continue;
+    }
+
+    try {
+      player.contextmenu.remove(name);
+    } catch {
+      // 当前播放器配置下该内建项不存在（如未开启倍速/画面比例），忽略即可
+    }
+  }
+
+  if (switches.version === false) {
+    return;
+  }
+
   // ArtPlayer 内建的版本项会把当前页面地址拼成 ?ref=... 的追踪参数，
   // 这里移除内建项，换成不带 ref 的干净链接。
   try {
