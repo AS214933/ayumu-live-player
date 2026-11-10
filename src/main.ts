@@ -31,7 +31,7 @@ type TemplateControlOption = {
   position: "right";
   index?: number;
   html: string;
-  tooltip: string;
+  tooltip?: string;
   selector: TemplateSelector[];
   style?: Partial<CSSStyleDeclaration>;
   mounted?: (element: HTMLElement) => void;
@@ -577,13 +577,18 @@ function createTemplateControlOptions(source: ResolvedTemplateSource | undefined
     .map(createTemplateControlOption);
 }
 
+function getTemplateControlTooltip(control: TemplateSelectionControl): string | undefined {
+  // 标签已隐藏时，不要再用 hover tooltip 复述标签文本。
+  return playerConfig.hideControlLabel === true ? undefined : control.label;
+}
+
 function createTemplateControlOption(control: TemplateSelectionControl): TemplateControlOption {
   return {
     name: `template-${control.name}`,
     position: "right" as const,
     index: control.index,
     html: renderTemplateControlHtml(control),
-    tooltip: control.label,
+    tooltip: getTemplateControlTooltip(control),
     selector: control.options.map((option) => ({
       html: option.label,
       value: option.value,
