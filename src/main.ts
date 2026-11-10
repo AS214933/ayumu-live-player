@@ -1608,7 +1608,8 @@ function loadFlvSource(video: HTMLVideoElement, quality: StreamQuality) {
         isLive: playerConfig.isLive,
       },
       {
-        enableStashBuffer: false,
+        // 启用网络缓冲，减轻数据到达不均匀时的播放卡顿。
+        enableStashBuffer: true,
         stashInitialSize: 128,
         autoCleanupSourceBuffer: true,
         liveBufferLatencyChasing: true,
