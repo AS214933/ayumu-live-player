@@ -1668,6 +1668,10 @@ function loadHlsSource(video: HTMLVideoElement, quality: StreamQuality) {
   try {
     hlsPlayer = new Hls({
       lowLatencyMode: true,
+      // 边下载边转封装和解码，避免等整个 TS 分片下载完成才出画面。
+      progressive: true,
+      // 直播从首个选中分片的起点播放，避免为分片内的起播位置解码并丢弃前面的帧。
+      startOnSegmentBoundary: playerConfig.isLive,
       backBufferLength: 30,
       liveSyncDurationCount: 3,
       liveMaxLatencyDurationCount: 10,
